@@ -8,8 +8,9 @@ GitHub access reads a PAT from AWS Secrets Manager (JSON key api_key_value).
 Default secret is the AgentCore-managed github-pat vault entry; override with
 GITHUB_PAT_SECRET_ARN. The token is never logged or returned to the model.
 
-CUR data is queried through Athena (athena_query). The cur-athena, cur-sqs and
-cur-dynamodb skills describe the table and how to query it per service.
+CUR data is queried through Athena (athena_query). The cur-athena skill describes
+the table. One skill per service (cur-sqs, cur-dynamodb, cur-ec2, cur-s3, cur-sns,
+cur-lambda, cur-elasticache, cur-bedrock) describes how to query that service.
 """
 import base64
 import json
@@ -44,13 +45,15 @@ ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "cost-agent")
 ATHENA_TIMEOUT_S = int(os.environ.get("ATHENA_TIMEOUT_S", "120"))
 ATHENA_MAX_ROWS = 500
 
-SYSTEM_PROMPT = f"""You investigate AWS cost changes for DynamoDB tables and SQS queues.
+SYSTEM_PROMPT = f"""You investigate AWS cost changes for SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda, ElastiCache and Bedrock.
 Use only numbers returned by tools or present in the case. Never invent figures.
 Keep working notes in the workspace so a later call in the same session can continue.
 
 Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
 Before writing any query, load the cur-athena skill, then the skill for the service
-in scope: cur-sqs or cur-dynamodb. Analyse one service at a time.
+in scope: cur-sqs, cur-dynamodb, cur-ec2, cur-s3, cur-sns, cur-lambda, cur-elasticache
+or cur-bedrock. Analyse one service at a time. CloudWatch metric names in those skills
+are confirmation targets. You cannot read CloudWatch yet, so do not invent metric values.
 
 Skills are available via the skills tool — load github-code-lookup when you
 need GitHub access. GitHub tools load a PAT from Secrets Manager for ``devrev``

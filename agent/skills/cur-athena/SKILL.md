@@ -3,7 +3,7 @@ name: cur-athena
 description: >
   How to query AWS Cost and Usage Report (CUR 2.0) data in Athena with the athena_query tool:
   table, key columns, cost rules and the query pattern for an investigation. Load before any
-  cost query, then load the service skill (cur-sqs or cur-dynamodb).
+  cost query, then load the matching service skill.
 ---
 
 # Querying CUR in Athena
@@ -21,9 +21,17 @@ Work on one service at a time: the one named in the request. Every query must fi
 | --- | --- | --- |
 | SQS | `AWSQueueService` | cur-sqs |
 | DynamoDB | `AmazonDynamoDB` | cur-dynamodb |
+| EC2 (also EBS, NAT, public IPv4) | `AmazonEC2` | cur-ec2 |
+| S3 | `AmazonS3` | cur-s3 |
+| SNS | `AmazonSNS` | cur-sns |
+| Lambda | `AWSLambda` | cur-lambda |
+| ElastiCache | `AmazonElastiCache` | cur-elasticache |
+| Bedrock | `AmazonBedrock`, plus marketplace codes whose `product['product_name']` contains `Bedrock` | cur-bedrock |
 
-Only SQS and DynamoDB are covered. If the request names another service, say it isn't supported
-yet. If it names no service, analyse SQS and DynamoDB separately, one after the other.
+These product codes are the ones present in this account's CUR. If a filter returns nothing,
+run `SELECT DISTINCT line_item_product_code ... LIMIT 50` before saying the service is absent.
+If the request names no service, rank services by cost first, then analyse the top movers one
+at a time. Do not mix services in one query.
 
 ## Rules for every query
 

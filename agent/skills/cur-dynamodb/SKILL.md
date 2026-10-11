@@ -8,6 +8,26 @@ description: >
 
 # DynamoDB in CUR
 
+## Top 5 cost drivers
+
+1. Write request units. One WRU is up to 1 KB. Crossing a 1 KB boundary multiplies write cost. Transactional writes cost double.
+2. Read request units. One RRU is 4 KB strongly consistent, half that for eventual consistency. Scans multiply the count.
+3. Capacity mode fit. Provisioned bills whether used or not. On-demand is cheaper below roughly 29% steady utilization of the equivalent provisioned capacity.
+4. Storage and backups. Standard storage, PITR, and on-demand backups. Index storage counts.
+5. Indexes, replication and streams. Each GSI repeats writes on it. Global tables add replicated writes. Streams bill separately and often have no resource ID.
+
+## Top 5 metrics
+
+Namespace `AWS/DynamoDB`, dimensions `TableName` and `GlobalSecondaryIndexName`.
+
+1. `ConsumedWriteCapacityUnits` (Sum). `Source` separates `Customer` from `GlobalTable`.
+2. `ConsumedReadCapacityUnits` (Sum)
+3. `ProvisionedWriteCapacityUnits` and `ProvisionedReadCapacityUnits`. Utilization is consumed divided by provisioned.
+4. `ReadThrottleEvents` and `WriteThrottleEvents`
+5. `ReturnedItemCount` against `ConsumedReadCapacityUnits` (scans and filters)
+
+Average item size is `TableSizeBytes` / `ItemCount` from DescribeTable. Table-level metrics exclude indexes.
+
 Filter every query with `line_item_product_code = 'AmazonDynamoDB'`.
 `line_item_resource_id` is the table ARN (`arn:aws:dynamodb:<region>:<account>:table/<name>`).
 GSI cost is rolled into the table's ARN; CUR can't separate indexes.

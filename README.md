@@ -1,8 +1,8 @@
 # cost-attribution
 
-A cost investigator agent for AWS. Given a prompt or a "case" about a DynamoDB table or SQS queue,
-it works out why the cost changed and replies with the cause, evidence, fix, estimated monthly saving
-and confidence.
+A cost investigator agent for AWS. Given a prompt or a "case" about one service
+(SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache or Bedrock), it works out why the cost
+changed and replies with the cause, evidence, fix, estimated monthly saving and confidence.
 
 The agent is built with [Strands](https://strandsagents.com/), calls Claude Sonnet 4.5 on Amazon Bedrock,
 and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persistent workspace mounted at
@@ -141,7 +141,7 @@ The AWS principal behind those keys needs permission to:
 ```bash
 uv run --with boto3 python deploy/invoke.py "List the workspace and say what is there."
 
-# Name one service per request (sqs or dynamodb):
+# Name one service per request:
 uv run --with boto3 python deploy/invoke.py "Which SQS queues changed most in cost over the last week, and why?"
 
 # Reuse a session to keep the same workspace (the ID must be at least 33 characters):
@@ -190,7 +190,7 @@ rows as JSON with the query ID and MB scanned. It accepts only `SELECT`, `WITH`,
 `SHOW`, requires `SELECT`/`WITH` queries to filter on `billing_period`, and returns at most 500 rows
 (200 by default), with a note telling the agent to aggregate further when results are cut off.
 
-Restricting a query to one service (SQS or DynamoDB) is left to the skills, not the tool.
+Restricting a query to one service is left to the skills, not the tool.
 
 ## Agent skills
 
@@ -207,11 +207,17 @@ Bundled today:
 | --- | --- |
 | `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
 | `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
-| `cur-sqs` | SQS analysis: billed operations, waste checks (URL lookups, batching, empty receives), example queries |
-| `cur-dynamodb` | DynamoDB analysis: on-demand vs provisioned, storage and PITR, Streams, item-size signals, example queries |
+| `cur-sqs` | SQS: request mix, batching, empty receives, top cost drivers and metrics |
+| `cur-dynamodb` | DynamoDB: on-demand vs provisioned, storage, PITR, Streams, item size |
+| `cur-ec2` | EC2, EBS, NAT and public IPv4: instance hours, volumes, transfer |
+| `cur-s3` | S3: storage class, request tier, transfer, retrieval and early-delete fees |
+| `cur-sns` | SNS: publishes, deliveries, fan-out transfer, filtering |
+| `cur-lambda` | Lambda: GB-seconds, invocations, provisioned concurrency |
+| `cur-elasticache` | ElastiCache: node-hours by type, replicas, backups |
+| `cur-bedrock` | Bedrock: token types, marketplace model lines, provisioned throughput |
 
-Only SQS and DynamoDB are covered. To add a service, create `agent/skills/cur-<service>/SKILL.md`
-and add its product code to the scope table in `cur-athena`.
+To add a service, create `agent/skills/cur-<service>/SKILL.md` and add its product code to the
+scope table in `cur-athena`.
 
 Add a new skill by creating `agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
 `description`) and markdown instructions, then redeploy.

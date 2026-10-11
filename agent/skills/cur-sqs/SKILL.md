@@ -3,10 +3,30 @@ name: cur-sqs
 description: >
   SQS cost analysis from CUR: how SQS is billed, which operations drive cost, and the waste
   checks (URL lookups per send, batching, empty receives) with example Athena queries.
-  Load after cur-athena when the service in scope is SQS.
+  Load after cur-athena when the service in scope is SQS. Product code in this account is AWSQueueService, not AmazonSQS.
 ---
 
 # SQS in CUR
+
+## Top 5 cost drivers
+
+1. Request count. Send, receive, delete and change-visibility each bill. An unbatched message is at least 3 requests.
+2. Empty receives. Short polling and idle pollers can exceed real traffic. Long polling (up to 20s) cuts it.
+3. Payload size. Each 64 KB chunk is one request.
+4. FIFO and fair queues. FIFO bills higher. Standard queues using message group IDs bill at both rates.
+5. Adjacent charges. KMS for encrypted queues, S3 for the extended client, and cross-region transfer. Same-region transfer is free.
+
+## Top 5 metrics
+
+Namespace `AWS/SQS`, dimension `QueueName`.
+
+1. `NumberOfMessagesSent`
+2. `NumberOfEmptyReceives` against non-empty receives
+3. `NumberOfMessagesReceived` (includes redeliveries)
+4. `SentMessageSize` (64 KB chunk boundary)
+5. `ApproximateNumberOfMessagesVisible` and `ApproximateAgeOfOldestMessage`
+
+CloudWatch does not give the raw `ReceiveMessage` API count. Use CUR `line_item_operation = 'Receive'` for that.
 
 Filter every query with `line_item_product_code = 'AWSQueueService'`.
 `line_item_resource_id` is the queue ARN (`arn:aws:sqs:<region>:<account>:<queue-name>`).
