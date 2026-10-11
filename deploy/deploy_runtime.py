@@ -41,7 +41,8 @@ spec = dict(
         "ATHENA_DATABASE": "hackathon_cur",
         "ATHENA_TABLE": "cost_report",
         "ATHENA_WORKGROUP": "cost-agent",
-        "GRAFANA_MCP_URL": "https://ai-gateway.dev.devrev-eng.ai/grafana/mcp",
+        # Empty disables Grafana; set to https://ai-gateway.dev.devrev-eng.ai/grafana/mcp to attach it.
+        "GRAFANA_MCP_URL": "",
         # Secrets Manager ARN for the AI gateway virtual key (JSON key x-litellm-api-key).
         "GRAFANA_MCP_SECRET_ARN": "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
         "GRAFANA_MCP_SECRET_JSON_KEY": "x-litellm-api-key",

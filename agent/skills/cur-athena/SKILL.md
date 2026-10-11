@@ -31,7 +31,8 @@ Work on one service at a time: the one named in the request. Every query must fi
 These product codes are the ones present in this account's CUR. If a filter returns nothing,
 run `SELECT DISTINCT line_item_product_code ... LIMIT 50` before saying the service is absent.
 If the request names no service, rank services by cost first, then analyse the top movers one
-at a time. Do not mix services in one query.
+at a time. Do not mix services in one query, with one exception: the overview's first query,
+which ranks every service by cost and change (example below).
 
 ## Rules for every query
 
@@ -43,7 +44,8 @@ at a time. Do not mix services in one query.
 - **Always aggregate.** Never select raw line items. Results are capped at 200 rows by default
   (500 max); if a result says `truncated`, aggregate further or rank with `ORDER BY ... LIMIT`.
 - **Settled data:** the last 24–48 hours fill in late. Treat D-2 as the newest settled day and
-  say so when you use anything newer.
+  say so when you use anything newer. The data is a static snapshot: 2026-10-01 to 2026-10-10
+  (10 Oct partial), so the newest settled day is 2026-10-08 and there is no September.
 - **Numbers come from query results only.** Quote the figures as returned, and keep the
   `query_execution_id` of each query you cite as evidence.
 - If a filter on a value from these notes returns nothing, check the real values first with
@@ -86,9 +88,10 @@ Narrow down step by step; each step is one aggregated query.
 1. **What data exists:**
    `SELECT billing_period, min(line_item_usage_start_date), max(line_item_usage_start_date) FROM cost_report GROUP BY 1`
 2. **Service total per day** for the window (about 30 rows): did anything move?
-3. **Resources ranked by change** against the baseline, `LIMIT 20`: which resource moved?
-   Baseline = same weekday last week (D-7) and the median of the same weekday over the last
-   4 weeks. Flag changes over 30% and over $5/day.
+3. **Resources ranked by increase** against the baseline, `LIMIT 20`: which resource jumped?
+   Baseline = the average of up to 7 previous days (there is no earlier month for a
+   same-weekday median). Flag increases over 30% and over $5/day, settled days only. Rank by
+   dollar increase; decreases are not anomalies. If nothing passes, there is no anomaly.
 4. **One resource by usage type and operation per day:** which cost line moved, and did volume
    (`line_item_usage_amount`) or cost per unit (cost ÷ usage amount) change?
 5. **The same resource per hour** around the change: when did it move? Use the hour to look
@@ -109,7 +112,42 @@ GROUP BY 1
 ORDER BY 1
 ```
 
-## Example: resources ranked by change against the baseline
+## Example: overview, every service ranked by cost and change
+
+The one query that may cover several services. Compares the latest settled day with the
+average of the 7 days before it.
+
+```sql
+WITH daily AS (
+  SELECT line_item_product_code AS product,
+         product['product_name'] AS product_name,
+         date(line_item_usage_start_date) AS day,
+         SUM(line_item_unblended_cost) AS cost
+  FROM cost_report
+  WHERE billing_period = '2026-10'
+    AND line_item_line_item_type = 'Usage'
+    AND date(line_item_usage_start_date) <= DATE '2026-10-08'
+  GROUP BY 1, 2, 3
+)
+SELECT product,
+       MAX(product_name) AS product_name,
+       ROUND(SUM(cost), 2) AS cost_oct1_8,
+       ROUND(SUM(cost) FILTER (WHERE day = DATE '2026-10-08'), 2) AS cost_oct8,
+       ROUND(AVG(cost) FILTER (WHERE day < DATE '2026-10-08'), 2) AS avg_prior_7d
+FROM daily
+GROUP BY 1
+ORDER BY cost_oct1_8 DESC
+LIMIT 20
+```
+
+Marketplace products show an opaque code in `product`; `product_name` says what they are (a name
+containing `Bedrock` belongs to cur-bedrock). Products that aren't covered by a skill still
+appear here; report them but don't analyse them.
+
+## Example: sudden increases per resource (anomaly scan)
+
+Each settled day compared with the average of up to 7 previous days for that resource.
+Increases only; needs at least 3 previous days so the first days of the month aren't flagged.
 
 ```sql
 WITH daily AS (
@@ -117,27 +155,34 @@ WITH daily AS (
          date(line_item_usage_start_date) AS day,
          SUM(line_item_unblended_cost) AS cost
   FROM cost_report
-  WHERE billing_period IN ('2026-09', '2026-10')
+  WHERE billing_period = '2026-10'
     AND line_item_product_code = 'AWSQueueService'
     AND line_item_line_item_type = 'Usage'
-    AND date(line_item_usage_start_date) IN (DATE '2026-10-09', DATE '2026-10-02', DATE '2026-09-25',
-                                             DATE '2026-09-18', DATE '2026-09-11')
+    AND date(line_item_usage_start_date) <= DATE '2026-10-08'
   GROUP BY 1, 2
+),
+scored AS (
+  SELECT resource_id, day, cost,
+         AVG(cost) OVER (PARTITION BY resource_id ORDER BY day ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS baseline,
+         COUNT(*) OVER (PARTITION BY resource_id ORDER BY day ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS prior_days
+  FROM daily
 )
-SELECT resource_id,
-       ROUND(SUM(cost) FILTER (WHERE day = DATE '2026-10-09'), 2) AS cost_day,
-       ROUND(SUM(cost) FILTER (WHERE day = DATE '2026-10-02'), 2) AS cost_d7,
-       ROUND(approx_percentile(cost, 0.5) FILTER (WHERE day < DATE '2026-10-09'), 2) AS median_4wk
-FROM daily
-GROUP BY 1
-ORDER BY ABS(COALESCE(SUM(cost) FILTER (WHERE day = DATE '2026-10-09'), 0)
-           - COALESCE(approx_percentile(cost, 0.5) FILTER (WHERE day < DATE '2026-10-09'), 0)) DESC
+SELECT resource_id, day,
+       ROUND(cost, 2) AS cost,
+       ROUND(baseline, 2) AS baseline,
+       ROUND(cost - baseline, 2) AS increase,
+       ROUND(100 * (cost - baseline) / baseline, 0) AS increase_pct
+FROM scored
+WHERE prior_days >= 3
+  AND cost - baseline > 5
+  AND cost > 1.3 * baseline
+ORDER BY increase DESC
 LIMIT 20
 ```
 
-A resource with no rows on a day had zero cost that day, so a median over fewer than four
-values overstates the baseline; mention it when it matters. If earlier months have no data
-(step 1), use the weeks that exist and say the baseline is shorter.
+A resource with no rows on a day had zero cost that day, but has no row in `daily`, so its
+baseline averages only the days it had cost. Mention it when a resource was idle before the
+jump: the increase from zero is real even though no baseline is shown.
 
 ## Example: one resource by cost line per day
 

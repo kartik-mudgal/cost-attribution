@@ -1,8 +1,9 @@
 # cost-attribution
 
-A cost investigator agent for AWS. Given a prompt or a "case" about one service
-(SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache or Bedrock), it works out why the cost
-changed and replies with the cause, evidence, fix, estimated monthly saving and confidence.
+A cost investigator agent for AWS (SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache and
+Bedrock). It answers quick cost questions, analyses cost across services, deep-dives into one
+resource down to the code, and explains sudden cost increases. Answers start with a verdict
+and give evidence, fixes, estimated monthly savings and confidence for each finding.
 
 The agent is built with [Strands](https://strandsagents.com/), calls Claude Sonnet 5 on Amazon Bedrock,
 and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persistent workspace mounted at
@@ -291,9 +292,14 @@ Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
 
 ## Grafana MCP server
 
-The agent attaches Grafana as an MCP server through the DevRev AI gateway
-(`https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`). Each request sends the header
-`x-litellm-api-key: Bearer <virtual key>`.
+**Off for now.** `GRAFANA_MCP_URL` is empty in `deploy_runtime.py` and in the `agent.py`
+default. Metrics come from the `cloudwatch_metrics` Athena view instead: it is the same dev
+account as the CUR data and gives the same numbers every run. Grafana's `cloudwatch`
+datasource has no region, credentials or role configured, so its account is unknown.
+
+To attach it, set `GRAFANA_MCP_URL` to `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`.
+The agent then connects to Grafana through the DevRev AI gateway, and each request sends the
+header `x-litellm-api-key: Bearer <virtual key>`.
 
 - The virtual key is in the Secrets Manager secret `grafana-mcp`, under the JSON key
   `x-litellm-api-key`. It can be stored with or without the `Bearer ` prefix. The role reads it via
@@ -308,8 +314,28 @@ The agent attaches Grafana as an MCP server through the DevRev AI gateway
 ## Status
 
 Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool, the CUR
-skills, the Grafana MCP server, the `cloudwatch-metrics` skill, and `publish_artifact`
-(presigned download URLs) are in place. October 2026
-daily metrics are the Athena view `cloudwatch_metrics`. No skill or prompt tells the agent when
-to use the Grafana tools yet. Still to add in `agent/agent.py`: a live `get_cloudwatch` tool and
-`describe_resource`.
+skills, the `cloudwatch-metrics` skill, and `publish_artifact` (presigned download URLs) are in
+place. October 2026 daily metrics are the Athena view `cloudwatch_metrics`. The Grafana MCP
+server is supported but switched off. Still to add in `agent/agent.py`: a live `get_cloudwatch`
+tool and `describe_resource`.
+
+## How the agent handles requests
+
+The system prompt (`SYSTEM_PROMPT` in `agent/agent.py`) sets rules for every request, then has
+the agent classify the request and follow only that type's steps:
+
+| Type | Example | What it does |
+| --- | --- | --- |
+| Quick question | "What did queue X cost on Oct 8?" | Fewest queries, no investigation |
+| Overview | "Cost analysis of all resources" / "of SQS" | Ranks services, runs waste checks, investigates the top 3 findings |
+| Deep dive | "Deep dive into table Y" | Cost by line, metrics, code: where it's defined and who calls it |
+| Anomaly | "Why did cost jump?" | Confirms an increase (over 30% and over $5/day) first; if none, says "No anomaly" |
+
+Answers start with a verdict ("Action recommended", "No action needed", "Anomaly confirmed" or
+"No anomaly") and include what was checked, findings with query IDs and code references,
+resources that are fine, and confirmed and to-be-validated savings as separate totals. The
+agent is told to stop at about 50 tool calls.
+
+The prompt hard-codes the data window (CUR 2026-10-01 to 2026-10-10, newest settled day
+2026-10-08) because the data is a static snapshot. Update it, and the dates in `cur-athena`,
+if newer CUR data is loaded.
