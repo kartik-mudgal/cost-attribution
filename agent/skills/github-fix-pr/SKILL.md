@@ -100,8 +100,9 @@ PR tools. Prefer application-repo fixes when the bug is in client code (e.g. Get
 ## Limits
 
 - Only **`devrev`** org repos (enforced by tools).
-- Runtime must have **`gh`** (GitHub CLI) and **`git`** on PATH. Clone uses `gh repo clone` with
-  `GH_TOKEN` (never embedded in remote URLs). PRs use `gh pr create`. Shallow history (`--depth 50`).
+- Runtime must have **`git`** on PATH. Deployed agents bundle **`gh`** under `bin/gh` (`PATH` includes
+  `/var/task/bin`): initial clone uses `gh repo clone`, git auth uses `gh auth git-credential`, PRs
+  use `gh pr create` (all with `GH_TOKEN`; token never in remote URLs). Shallow history (`--depth 50`).
 - Large repos: edit only files you need; use `paths` to stage a tight commit.
 - PAT must allow **contents** and **pull requests** on the target repo.
 - Never log or print the token.

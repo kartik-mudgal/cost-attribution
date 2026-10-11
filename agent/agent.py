@@ -29,8 +29,8 @@ User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns 
 presigned download URL for each file.
 
 With github-fix-pr, the agent may clone devrev repos under workspace/repos/, edit files with
-edit_workspace_file, and open fix PRs via github_clone_repo and github_create_fix_pr (gh and git
-must be on the runtime PATH).
+edit_workspace_file, and open fix PRs via github_clone_repo and github_create_fix_pr (bundled `gh` +
+`git` on PATH; PAT from Secrets Manager as GH_TOKEN).
 
 Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
 immediately; the investigation continues in a background thread (AgentCore async
@@ -79,6 +79,11 @@ from memory import MEMORY_PROMPT
 from memory import configure as configure_shared_memory
 
 logger = logging.getLogger(__name__)
+
+_AGENT_DIR = Path(__file__).resolve().parent
+_BUNDLED_BIN = _AGENT_DIR / "bin"
+if _BUNDLED_BIN.is_dir():
+    os.environ["PATH"] = f"{_BUNDLED_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-5")
