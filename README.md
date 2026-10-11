@@ -259,7 +259,7 @@ Bundled today:
 | --- | --- |
 | `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
 | `marina-deployments` | Correlate cost/metric windows to marina `image.tag` deploys and commits |
-| `github-fix-pr` | Clone a `devrev` repo in the workspace and open a `cost-fix/*` PR (`gh` + `git`) |
+| `github-fix-pr` | Clone a `devrev` repo in the workspace and open a `cost-fix/*` PR (`git` + REST API) |
 | `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
 | `cur-sqs` | SQS: request mix, batching, empty receives, top cost drivers and metrics |
 | `cur-dynamodb` | DynamoDB: on-demand vs provisioned, storage, PITR, Streams, item size |
@@ -292,11 +292,8 @@ aws bedrock-agentcore-control create-api-key-credential-provider \
 Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
 `GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
 
-`github-fix-pr` uses the same PAT via `GH_TOKEN`. On the deployed runtime, **`gh`** (bundled under
-`bin/gh` in the zip, `deploy/bundle_gh.sh`, Linux ARM64; `PATH` includes `/var/task/bin`) runs
-`gh repo clone`, `gh auth git-credential` for `git push`, and `gh pr create`. **`git`** must also
-be on PATH. Without `gh`, clone/push fall back to plain `git` and PR creation uses the REST API.
-Remote URLs never embed the token.
+`github-fix-pr` uses the same PAT via `GH_TOKEN` for `git clone` / `git push` and the GitHub REST
+API to open PRs (**git** must be on the AgentCore runtime PATH). Remote URLs never embed the token.
 
 ## Grafana MCP server
 
