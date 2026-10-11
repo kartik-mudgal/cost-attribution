@@ -4,7 +4,7 @@ A cost investigator agent for AWS. Given a prompt or a "case" about one service
 (SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache or Bedrock), it works out why the cost
 changed and replies with the cause, evidence, fix, estimated monthly saving and confidence.
 
-The agent is built with [Strands](https://strandsagents.com/), calls Claude Sonnet 4.5 on Amazon Bedrock,
+The agent is built with [Strands](https://strandsagents.com/), calls Claude Sonnet 5 on Amazon Bedrock,
 and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persistent workspace mounted at
 `/mnt/workspace`, so notes written in one call are still there in later calls with the same session ID.
 
@@ -195,7 +195,7 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
-| `MODEL_ID` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Bedrock model or inference profile |
+| `MODEL_ID` | `us.anthropic.claude-sonnet-5` | Bedrock model or inference profile |
 | `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
 | `GITHUB_PAT_SECRET_ARN` | AgentCore-managed `github-pat` secret | Secrets Manager ARN for the GitHub PAT |
 | `GITHUB_PAT_SECRET_JSON_KEY` | `api_key_value` | JSON key inside that secret |
