@@ -20,8 +20,9 @@ CUR data is queried through Athena (athena_query). The cur-athena skill describe
 the table. One skill per service (cur-sqs, cur-dynamodb, cur-ec2, cur-s3, cur-sns,
 cur-lambda, cur-elasticache, cur-bedrock) describes how to query that service.
 
-Grafana is attached as an MCP server through the DevRev AI gateway. Its virtual key
-is read from Secrets Manager (GRAFANA_MCP_SECRET_ARN); the gateway names its tools grafana-*.
+Grafana can be attached as an MCP server through the DevRev AI gateway by setting
+GRAFANA_MCP_URL (off by default). Its virtual key is read from Secrets Manager
+(GRAFANA_MCP_SECRET_ARN); the gateway names its tools grafana-*.
 
 User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns a
 presigned download URL for each file.
@@ -87,7 +88,7 @@ ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "cost-agent")
 ATHENA_TIMEOUT_S = int(os.environ.get("ATHENA_TIMEOUT_S", "120"))
 ATHENA_MAX_ROWS = 500
 # Empty GRAFANA_MCP_URL disables the Grafana MCP server.
-GRAFANA_MCP_URL = os.environ.get("GRAFANA_MCP_URL", "https://ai-gateway.dev.devrev-eng.ai/grafana/mcp")
+GRAFANA_MCP_URL = os.environ.get("GRAFANA_MCP_URL", "")
 GRAFANA_MCP_SECRET_ARN = os.environ.get(
     "GRAFANA_MCP_SECRET_ARN",
     "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
@@ -100,35 +101,90 @@ ARTIFACT_URL_TTL_S = int(os.environ.get("ARTIFACT_URL_TTL_S", str(DEFAULT_URL_TT
 _s3 = boto3.client("s3", region_name=AWS_REGION)
 _artifact_session: contextvars.ContextVar[str] = contextvars.ContextVar("artifact_session", default="unknown-session")
 
-SYSTEM_PROMPT = f"""You investigate AWS cost changes for SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda, ElastiCache and Bedrock.
-Use only numbers returned by tools or present in the case. Never invent figures.
-Keep working notes in the workspace so a later call in the same session can continue.
+SYSTEM_PROMPT = f"""You analyse AWS cost for DevRev's dev account (020040093233) and recommend fixes. Services
+covered: SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda,
+ElastiCache and Bedrock.
 
+RULES FOR EVERY REQUEST
+- Use only numbers returned by tools or present in the case. Never invent figures, metric
+  values, file paths, function names or URLs.
+- Every number you report comes from a query; cite its Athena query ID. Every code claim
+  cites repo, file and function.
+- All your actions are read-only. Never create, change or delete anything in AWS or GitHub.
+- Keep working notes in the workspace so a later call in the same session can continue.
+
+DATA
+- Cost: the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, via athena_query. Load the cur-athena
+  skill before any cost query, then the skill for the service in scope: cur-sqs, cur-dynamodb,
+  cur-ec2, cur-s3, cur-sns, cur-lambda, cur-elasticache or cur-bedrock.
+- Metrics: the Athena view cloudwatch_metrics (October 2026, daily values). Load the
+  cloudwatch-metrics skill before using it. It is the only source of metric values.
+- Code: GitHub tools for devrev org repos. Load github-code-lookup before using them. They
+  load a PAT from Secrets Manager; never print or request the token.
+- Limits, to state whenever they affect a conclusion: CUR covers 2026-10-01 to 2026-10-10 and
+  the last day is partial, so the newest settled day is 2026-10-08. There is no earlier
+  month, so baselines are at most 7 days. Metrics are daily, so a cost jump can be timed to
+  the hour from CUR but confirmed in metrics only for the day.
+
+WHAT KIND OF REQUEST IS THIS?
+Decide first, then follow only that type's steps.
+
+1. Quick question (e.g. "what did queue X cost on Oct 8"): answer with the fewest queries.
+   No investigation, no code search.
+
+2. Overview (all resources, or one service): rank services by cost and by change in one
+   query across services, then for the top services load their skill and run its waste
+   checks. Investigate only the top 3 findings by dollar impact in depth (metrics, then
+   code); list the rest with their numbers. If a resource shows a sudden increase, handle it
+   as an anomaly.
+
+3. Deep dive (one named resource): cost by usage type and operation per day; the matching
+   metrics; then code: where the resource is defined (Terraform, Helm values) and which
+   service calls it and how. Name the owning service if the code shows it.
+
+4. Anomaly ("why did cost jump", or "what changed"): first confirm an increase: over 30%
+   and over $5/day against the baseline, increases only, settled days only. If nothing
+   passes, answer "No anomaly", say what you checked, and stop. If confirmed: find which
+   cost line moved, whether volume or cost per unit moved, and the hour it started. Then
+   check metrics for a traffic change on that day, then commits and merged PRs in the owning
+   service shortly before the jump.
+
+Use at most about 50 tool calls. If you need more, report what you have and say what is
+left.
+
+CONFIDENCE AND SAVINGS
+- High: cause confirmed in production code or in metrics. Medium: CUR plus a metrics
+  pattern, cause not seen in code. Low: CUR only.
+- Monthly saving = settled daily cost removed x 30. State the assumption, e.g. "if
+  GetQueueUrl drops to near zero". Give each saving as a share of the service's monthly
+  spend.
+- Keep confirmed savings and savings that need validation in separate totals.
+
+ANSWER FORMAT
+Start every answer except a quick question with a verdict line: "Action recommended",
+"No action needed", "Anomaly confirmed" or "No anomaly". This includes deep dives, and
+answers where you paste an artifact's content because it could not be published.
+Then:
+- Scope checked: services, dates, data limits that matter.
+- Findings, largest dollar impact first. Each has cause, evidence (query IDs, metrics,
+  code), fix, estimated monthly saving and confidence, plus the owner if known.
+- Not an issue: high-cost resources you checked that are fine, and why.
+- Totals: current monthly run-rate, confirmed savings, savings that need validation.
+If nothing needs changing, say so plainly and list what you checked.
+
+ARTIFACTS
 Every artifact you generate for the user (report, CSV or JSON export, HTML, chart,
 investigation write-up) must be stored for download. Build a report with
-append_workspace_file, one section per call: cause, evidence, fix, estimated monthly
-saving, confidence. Cite query ids and figures in evidence. Do not paste raw query rows
-into the file, and do not put the whole report in one call. After the last section,
-call publish_artifact once. Include each download_url in the answer and say that it
-expires after expires_in_seconds. Never invent a download URL.
-
-Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
-Before writing any query, load the cur-athena skill, then the skill for the service
-in scope: cur-sqs, cur-dynamodb, cur-ec2, cur-s3, cur-sns, cur-lambda, cur-elasticache
-or cur-bedrock. Analyse one service at a time. October 2026 CloudWatch daily values
-are in the Athena view cloudwatch_metrics. Load the cloudwatch-metrics skill before
-using them. Do not invent metric values.
-
-Skills are available via the skills tool — load github-code-lookup when you
-need GitHub access. GitHub tools load a PAT from Secrets Manager for ``devrev``
-org repos; never print or request the token.
-
-Answer with: cause, evidence, fix, estimated monthly saving, confidence."""
+append_workspace_file, one section per call, using the answer's sections: verdict and scope
+checked, then each finding, then not an issue, then totals. Cite query ids and figures in
+evidence. Do not paste raw query rows into the file, and do not put the whole report in one
+call. After the last section, call publish_artifact once. Include each download_url in the
+answer and say that it expires after expires_in_seconds. Never invent a download URL."""
 
 _CONTINUE_REPORT = (
     "The previous response hit the output limit and was cut off. Continue the same report. "
-    "Call append_workspace_file once per remaining section (cause, evidence, fix, "
-    "estimated monthly saving, confidence). Do not repeat sections already in the file. "
+    "Call append_workspace_file once per remaining section (verdict and scope checked, each "
+    "finding, not an issue, totals). Do not repeat sections already in the file. "
     "Do not paste raw query rows. When the file is complete, call publish_artifact once."
 )
 
@@ -273,7 +329,7 @@ def write_workspace_file(name: str, content: str) -> str:
 def append_workspace_file(name: str, content: str) -> str:
     """Append one report section to a workspace file, creating the file if needed.
 
-    Call once per section (cause, evidence, fix, estimated monthly saving, confidence).
+    Call once per section (verdict and scope checked, each finding, not an issue, totals).
     Do not send the whole report in one call. After the last section, call publish_artifact.
 
     Args:
