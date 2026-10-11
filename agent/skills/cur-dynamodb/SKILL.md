@@ -56,8 +56,9 @@ not request counts.
   reads. This is the waste case.
 
 CUR shows only units, so it can tell you **which cost line moved and when**, but not whether
-requests or item size changed. That needs CloudWatch, which isn't available to you yet. Name the
-metric that would confirm your explanation and lower your confidence:
+requests or item size changed. Load `cloudwatch-metrics` and read the metric from
+`cloudwatch_metrics`. If that metric returns no rows, it is absent from the October snapshot:
+name it and lower your confidence:
 
 - Request count per operation: `SuccessfulRequestLatency` SampleCount by `Operation`.
 - Units per request: `ConsumedWriteCapacityUnits` ÷ write-request SampleCount. A jump means items

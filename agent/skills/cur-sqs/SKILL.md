@@ -65,8 +65,8 @@ Split each change into volume (more requests) and waste (requests that do no use
 | Attribute polling | `GetQueueAttributes` requests per hour | Autoscalers or health checks polling queue depth too often |
 | Receive share | `Receive` cost ÷ queue cost | Receives dominate: likely short polling or idle consumers |
 
-These need CloudWatch, which isn't available to you yet. When a finding depends on them, say
-which metric would confirm it and lower your confidence:
+Load `cloudwatch-metrics` and read these from `cloudwatch_metrics`. If a metric returns no
+rows, it is absent from the October snapshot: say so and lower your confidence:
 
 - Empty-receive ratio: `NumberOfEmptyReceives` ÷ CUR `Receive` requests. High means short
   polling (`ReceiveMessageWaitTimeSeconds` = 0) or too many idle consumers.
