@@ -376,8 +376,8 @@
     <h1>DevRev AWS Cost Investigator</h1>
     <div style="display:flex;gap:12px;align-items:center;">
         <div class="transport-toggle">
-            <button id="btn-sse" class="active" onclick="setTransport('sse')">SSE</button>
-            <button id="btn-ws" onclick="setTransport('ws')">WebSocket</button>
+            <button id="btn-sse" onclick="setTransport('sse')">SSE</button>
+            <button id="btn-ws" class="active" onclick="setTransport('ws')">WebSocket</button>
         </div>
         <code id="session-chip" title="AgentCore runtimeSessionId (workspace persists across turns)" style="font-size:11px;color:var(--text-dim);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></code>
         <button id="btn-new-session" onclick="resetSession()" style="font-size:11px;padding:4px 8px;cursor:pointer;">New session</button>
@@ -416,8 +416,9 @@
 // API_BASE and WS_URL are injected at deploy time; fall back to same-origin for local dev
 const API_BASE = window.__API_BASE || window.location.origin;
 const WS_URL = window.__WS_URL || `${window.location.origin.replace('http', 'ws')}/ws`;
-// Local `ui/local_server.py` only implements SSE; WebSocket needs the AWS proxy stack.
-let transport = 'sse';
+// Default WebSocket: API Gateway HTTP buffers SSE; WS streams AG-UI events live.
+// Local `ui/local_server.py` only implements SSE — switch the toggle there.
+let transport = 'ws';
 let ws = null;
 let threadId = null;
 let eventCount = 0;
