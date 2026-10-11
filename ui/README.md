@@ -79,8 +79,9 @@ JSON mode (`"stream": false` or `"response_format": "json"`) returns:
 
 Pass `"async": true` and a `webhook_url`. AgentCore accepts quickly and runs in the
 background with an async-only system prompt and the `post_async_webhook` tool, which
-must POST **100%** of the report/answer to that URL (`X-Session-Id` header). Sync/chat
-invokes do not register that tool.
+POSTs JSON `{"session_id":"...","body":"<full report md>"}` to that URL
+(`Content-Type: application/json`, plus `X-Session-Id`). Sync/chat invokes do not
+register that tool.
 
 ```bash
 SECRET=$(aws secretsmanager get-secret-value --secret-id cost-agent-ui/api-secret \
