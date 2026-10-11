@@ -292,9 +292,10 @@ aws bedrock-agentcore-control create-api-key-credential-provider \
 Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
 `GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
 
-`github-fix-pr` uses the same PAT via `GH_TOKEN` for `git clone` / `git push` and the GitHub REST
-API to open PRs. **`git`** must be on the runtime PATH (AgentCore base image). **`gh`** is bundled
-under `bin/gh` in the deploy zip (`deploy/bundle_gh.sh`, Linux ARM64); `PATH` includes `/var/task/bin`.
+`github-fix-pr` uses the same PAT via `GH_TOKEN`. On the deployed runtime, **`gh`** (bundled under
+`bin/gh` in the zip, `deploy/bundle_gh.sh`, Linux ARM64; `PATH` includes `/var/task/bin`) runs
+`gh repo clone`, `gh auth git-credential` for `git push`, and `gh pr create`. **`git`** must also
+be on PATH. Without `gh`, clone/push fall back to plain `git` and PR creation uses the REST API.
 Remote URLs never embed the token.
 
 ## Grafana MCP server

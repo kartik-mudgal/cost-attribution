@@ -29,8 +29,8 @@ User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns 
 presigned download URL for each file.
 
 With github-fix-pr, the agent may clone devrev repos under workspace/repos/, edit files with
-edit_workspace_file, and open fix PRs via github_clone_repo and github_create_fix_pr (git on PATH;
-GitHub auth uses the PAT from Secrets Manager).
+edit_workspace_file, and open fix PRs via github_clone_repo and github_create_fix_pr (bundled `gh` +
+`git` on PATH; PAT from Secrets Manager as GH_TOKEN).
 
 Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
 immediately; the investigation continues in a background thread (AgentCore async

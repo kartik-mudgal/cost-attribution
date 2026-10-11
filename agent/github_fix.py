@@ -35,7 +35,14 @@ def public_remote(owner: str, repo: str) -> str:
     return f"https://github.com/{owner}/{repo}.git"
 
 
-# GH_TOKEN is read by the helper; never put the token in the remote URL.
+_GIT_WITH_GH_CRED = [
+    "-c",
+    "credential.helper=",
+    "-c",
+    "credential.helper=!gh auth git-credential",
+]
+
+# Fallback when gh is not on PATH (local dev without the bundled binary).
 _GIT_WITH_TOKEN_CRED = [
     "-c",
     "credential.helper=",
@@ -44,6 +51,14 @@ _GIT_WITH_TOKEN_CRED = [
 ]
 
 GITHUB_API = "https://api.github.com"
+
+
+def _gh_available() -> bool:
+    return shutil.which("gh") is not None
+
+
+def _git_cred_args() -> list[str]:
+    return _GIT_WITH_GH_CRED if _gh_available() else _GIT_WITH_TOKEN_CRED
 
 
 def _gh_env(token: str) -> dict[str, str]:
@@ -60,6 +75,13 @@ def _ensure_git() -> None:
         raise RuntimeError("git is not on PATH; install git on the AgentCore runtime")
 
 
+def _ensure_gh() -> None:
+    if not _gh_available():
+        raise RuntimeError(
+            "gh CLI is not on PATH; redeploy the agent (bundled under bin/gh) or install GitHub CLI"
+        )
+
+
 def _redact(text: str, token: str) -> str:
     if not text or not token:
         return text
@@ -68,13 +90,24 @@ def _redact(text: str, token: str) -> str:
 
 def _run_git(args: list[str], cwd: Path, token: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", *_GIT_WITH_TOKEN_CRED, *args],
+        ["git", *_git_cred_args(), *args],
         cwd=cwd,
         env=_gh_env(token),
         capture_output=True,
         text=True,
         timeout=GIT_TIMEOUT_S,
         check=check,
+    )
+
+
+def _run_gh(args: list[str], cwd: Path | None, token: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["gh", *args],
+        cwd=cwd,
+        env=_gh_env(token),
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
     )
 
 
@@ -87,7 +120,7 @@ def create_github_pull_request(
     head_branch: str,
     token: str,
 ) -> str:
-    """Open a pull request via GitHub REST API; returns html_url."""
+    """Open a pull request via GitHub REST API; returns html_url (fallback without gh)."""
     payload = json.dumps(
         {
             "title": title,
@@ -153,23 +186,44 @@ def clone_repository(
         if dest.exists() and not (dest / ".git").is_dir():
             raise ValueError(f"{rel} exists and is not a git clone; remove it first")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        proc = _run_git(
-            [
-                "clone",
-                "--branch",
-                base_branch,
-                "--single-branch",
-                "--depth",
-                "50",
-                remote,
-                str(dest),
-            ],
-            dest.parent,
-            token,
-            check=False,
-        )
-        if proc.returncode != 0:
-            _fail(proc, token, "git clone failed")
+        if _gh_available():
+            _ensure_gh()
+            proc = _run_gh(
+                [
+                    "repo",
+                    "clone",
+                    f"{owner}/{repo}",
+                    str(dest),
+                    "--",
+                    "--branch",
+                    base_branch,
+                    "--single-branch",
+                    "--depth",
+                    "50",
+                ],
+                None,
+                token,
+            )
+            if proc.returncode != 0:
+                _fail(proc, token, "gh repo clone failed")
+        else:
+            proc = _run_git(
+                [
+                    "clone",
+                    "--branch",
+                    base_branch,
+                    "--single-branch",
+                    "--depth",
+                    "50",
+                    remote,
+                    str(dest),
+                ],
+                dest.parent,
+                token,
+                check=False,
+            )
+            if proc.returncode != 0:
+                _fail(proc, token, "git clone failed")
         _run_git(["remote", "set-url", "origin", remote], dest, token)
         action = "cloned"
 
@@ -234,7 +288,7 @@ def create_fix_pull_request(
     commit_sha = _run_git(["rev-parse", "HEAD"], repo_dir, token).stdout.strip()
 
     push = subprocess.run(
-        ["git", *_GIT_WITH_TOKEN_CRED, "push", "-u", "origin", branch],
+        ["git", *_git_cred_args(), "push", "-u", "origin", branch],
         cwd=repo_dir,
         env=_gh_env(token),
         capture_output=True,
@@ -244,15 +298,40 @@ def create_fix_pull_request(
     if push.returncode != 0:
         _fail(push, token, "git push failed")
 
-    pr_url = create_github_pull_request(
-        owner,
-        repo,
-        title,
-        body,
-        base_branch,
-        branch,
-        token,
-    )
+    if _gh_available():
+        _ensure_gh()
+        pr_proc = _run_gh(
+            [
+                "pr",
+                "create",
+                "--repo",
+                f"{owner}/{repo}",
+                "--title",
+                title,
+                "--body",
+                body,
+                "--base",
+                base_branch,
+                "--head",
+                branch,
+            ],
+            repo_dir,
+            token,
+        )
+        if pr_proc.returncode != 0:
+            _fail(pr_proc, token, "gh pr create failed")
+        pr_url = pr_proc.stdout.strip()
+    else:
+        pr_url = create_github_pull_request(
+            owner,
+            repo,
+            title,
+            body,
+            base_branch,
+            branch,
+            token,
+        )
+
     return {
         "workspace_path": rel,
         "branch": branch,
