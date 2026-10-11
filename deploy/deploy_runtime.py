@@ -29,6 +29,9 @@ spec = dict(
     environmentVariables={
         "WORKSPACE_DIR": "/mnt/workspace",
         "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        # AgentCore Identity API-key credential provider name (PAT stored in token vault).
+        "GITHUB_PAT_PROVIDER": "github-pat",
+        "GITHUB_DEFAULT_OWNER": "devrev",
     },
     lifecycleConfiguration={"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
 )
