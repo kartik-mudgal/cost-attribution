@@ -16,63 +16,91 @@ schedule, waits for the async run to finish, and posts the report to Slack.
 
 ```mermaid
 flowchart TB
-  subgraph aws_data [AWS data]
-    sched["CUR export (daily refresh)"]
-    s3cur[("S3 · CUR 2.0 Parquet")]
-    s3cw[("S3 · CloudWatch metrics Parquet (demo snapshot)")]
-    glue["Glue · hackathon_cur"]
-    athena["Athena · cost_report + cloudwatch_metrics"]
-    sched --> s3cur --> glue
-    s3cw --> glue
-    glue --> athena
+  subgraph aws_data [AWS]
+    sched["Daily billing export"]
+    s3cur[("Stored cost data")]
+    s3cw[("Stored usage metrics (demo)")]
+    query["SQL query layer"]
+    sched --> s3cur --> query
+    s3cw --> query
   end
 
   subgraph devrev [DevRev]
-    wf["Scheduled workflow (daily)"]
-    hook["Webhook step"]
+    wf["Scheduled workflow"]
+    hook["Catch finished report"]
     slack["Slack channel"]
     wf --> hook
     hook --> slack
   end
 
-  subgraph agentcore [Bedrock AgentCore Runtime]
-    api["HTTP invocations proxy"]
-    agent["Cost investigator agent (Strands + Claude)"]
+  subgraph agentcore [Agent runtime]
+    api["Agent API"]
+    agent["Cost analyst agent"]
     api --> agent
   end
 
-  wf -->|"async: true, prompt, webhook_url"| api
-  agent -->|"athena_query (read-only)"| athena
-  agent -->|"post_async_webhook · full report markdown"| hook
+  wf -->|"Kick off today's analysis"| api
+  agent -->|"Read costs and metrics"| query
+  agent -->|"Deliver report when done"| hook
 ```
 
 Daily run in more detail:
 
 | Step | What happens |
 | --- | --- |
-| 1 | AWS writes refreshed CUR 2.0 Parquet into S3 (hourly rows, resource IDs). The Glue table `hackathon_cur.cost_report` points at that data. |
-| 2 | For the demo, October 2026 CloudWatch daily metrics are pre-scraped to Parquet in S3 and exposed as the Athena view `cloudwatch_metrics` (see `scripts/scrape_october_cloudwatch.py` and `scripts/cloudwatch_metrics.sql`). |
-| 3 | A DevRev workflow fires on a schedule, calls the agent proxy with `async: true` and a `webhook_url`, and uses a stable `session_id` when continuity is needed. |
-| 4 | The runtime accepts the request (202), runs the investigation in the background, and the agent finishes by calling `post_async_webhook` with the full markdown report. |
-| 5 | The workflow receives the webhook payload and posts the report (and any artifact links from `publish_artifact`) to Slack. |
+| 1 | AWS refreshes the daily cost export into object storage. |
+| 2 | A fixed demo snapshot of usage metrics lives alongside it so investigations can compare spend to traffic. |
+| 3 | On schedule, DevRev starts the agent with today's question and tells it where to send the answer when finished. |
+| 4 | The agent runs in the background, queries cost and metrics, and returns the full written report to DevRev. |
+| 5 | DevRev posts the report to Slack (plus download links if the agent attached files). |
 
-See [`ui/README.md`](ui/README.md) for the invoke and webhook JSON shape.
+### AWS × DevRev hackathon stack
+
+Services that **power** the demo (not the AWS products whose bills the agent analyses):
+
+| AWS service | Purpose in this architecture |
+| --- | --- |
+| **Billing → Cost and Usage Report (CUR)** | Daily line-item spend; exported into storage for the agent to investigate. |
+| **Amazon S3** | CUR and demo metrics, agent deploy bundle, optional report downloads, and optional static chat UI assets. |
+| **AWS Glue Data Catalog** | Table definitions so SQL can query CUR and metrics data in S3. |
+| **Amazon Athena** | Read-only SQL the agent uses to pull costs and metrics (scoped workgroup, scan limits). |
+| **Amazon Bedrock** | Claude model inference for analysis and report writing. |
+| **Amazon Bedrock AgentCore Runtime** | Hosts the agent, session workspace, and long-running daily investigations. |
+| **Amazon Bedrock AgentCore Memory** | Short-term chat history and shared facts learned across runs. |
+| **AWS Secrets Manager** | GitHub PAT and optional Grafana gateway credentials (never in code). |
+| **AWS IAM** | Runtime role permissions for Bedrock, Athena, S3, secrets, and memory. |
+| **Amazon CloudWatch Logs** | AgentCore runtime logs for debugging. |
+| **AWS X-Ray** | Optional tracing from the runtime. |
+| **Amazon CloudWatch** | Runtime telemetry; demo usage metrics were scraped from CloudWatch into S3 (agent queries Athena, not the live API). |
+| **AWS Lambda** + **Amazon API Gateway (HTTP)** | Thin proxy DevRev calls to start the agent and return immediately while work continues. |
+| **Amazon CloudFront** | Optional CDN in front of the browser chat UI (`ui/`); not used for the daily Slack path. |
+
+| DevRev capability | Purpose in this architecture |
+| --- | --- |
+| **Scheduled workflow** | Runs the daily cost investigation on a clock. |
+| **Agent / session integration** | Sends the prompt and receives the finished report from the agent. |
+| **Slack** | Posts the daily write-up to the team channel. |
+| **AI gateway (optional)** | Routes **Grafana MCP** when custom app metrics are enabled. |
+
+The agent’s skills also describe how to read **SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache, and Bedrock** spend from CUR—that is the *subject* of analysis, not the hosting stack.
+
+API field names and JSON shapes: [`ui/README.md`](ui/README.md).
 
 ### Inside the agent
 
 ```mermaid
 flowchart LR
-  subgraph inputs [Data sources]
-    cur["CUR via Athena<br/>hackathon_cur.cost_report"]
-    cw["Static CloudWatch demo<br/>view cloudwatch_metrics"]
-    gh["GitHub · devrev org<br/>PAT in Secrets Manager"]
-    graf["Grafana MCP<br/>optional · AI gateway"]
+  subgraph inputs [What it reads]
+    cur["Billing lines"]
+    cw["Usage metrics"]
+    gh["Repositories and deploys"]
+    graf["Custom app metrics (optional)"]
   end
 
-  subgraph agent [Agent runtime]
-    skills["Strands Agent Skills<br/>load on demand"]
-    tools["Tools: athena_query, workspace,<br/>GitHub, publish_artifact,<br/>post_async_webhook (async runs)"]
-    model["Claude Sonnet on Bedrock"]
+  subgraph agent [How it works]
+    skills["Service playbooks"]
+    tools["Query, notes, code search,<br/>file uploads, report delivery"]
+    model["Language model"]
     skills --> model
     tools --> model
   end
@@ -81,7 +109,7 @@ flowchart LR
   cw --> tools
   gh --> tools
   graf --> tools
-  model --> out["Markdown report + optional S3 artifact URL"]
+  model --> out["Written report and optional attachments"]
 ```
 
 | Source | How the agent uses it |
