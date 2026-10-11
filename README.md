@@ -68,24 +68,35 @@ aws iam put-role-policy --role-name cost-agent-runtime-role \
 The agent queries the CUR table `hackathon_cur.cost_report` (Glue catalog, `us-west-2`) through a
 dedicated `cost-agent` workgroup. The workgroup uses Athena managed query results, so there is no
 results bucket and the runtime role needs no S3 permissions for results. It also caps each query
-at 1 GB scanned.
+at 20 GB scanned (about $0.10 at Athena's $5 per TB).
+
+The table has no partition by service, so every query reads the whole month for the columns it
+uses. In early October 2026 (10 days of data), a DynamoDB breakdown already scanned about 0.7 GB;
+a full month will be roughly three times that. Athena cancels any query that goes over the cap.
 
 ```bash
 aws athena create-work-group --name cost-agent --region us-west-2 \
   --configuration '{
     "ManagedQueryResultsConfiguration": {"Enabled": true},
     "EnforceWorkGroupConfiguration": true,
-    "BytesScannedCutoffPerQuery": 1073741824,
+    "BytesScannedCutoffPerQuery": 21474836480,
     "PublishCloudWatchMetricsEnabled": true
   }'
+```
+
+To change the cap on the existing workgroup (value in bytes):
+
+```bash
+aws athena update-work-group --work-group cost-agent --region us-west-2 \
+  --configuration-updates '{"BytesScannedCutoffPerQuery": 21474836480}'
 ```
 
 `ManagedQueryResultsConfiguration` needs a recent AWS CLI. If yours rejects it, upgrade the CLI or
 turn on managed query results for the workgroup in the Athena console.
 
 The runtime role's Athena, Glue and CUR bucket permissions are in `deploy/role-policy.json`
-(statements `AthenaQuery`, `CurCatalog`, `CurDataList`, `CurDataRead`). After changing that file,
-apply it with the `aws iam put-role-policy` command above.
+(statements `AthenaQuery`, `CurCatalog`, `CurDataList`, `CurDataRead`). The deploy workflow applies
+that file to the role on every merge to `main`, so change permissions there, not by hand.
 
 ## Build and deploy
 
@@ -172,7 +183,7 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | `ATHENA_REGION` | `us-west-2` | Region of the Athena workgroup and Glue catalog |
 | `ATHENA_DATABASE` | `hackathon_cur` | Glue database holding the CUR table |
 | `ATHENA_TABLE` | `cost_report` | CUR 2.0 table, partitioned by `billing_period` |
-| `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a per-query scan limit |
+| `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a 20 GB per-query scan limit |
 | `ATHENA_TIMEOUT_S` | `120` | Seconds before `athena_query` stops a query |
 
 ## Athena query tool
