@@ -238,6 +238,46 @@
             font-style: italic;
         }
 
+        /* Thinking loader (shown until first token / tool / reasoning) */
+        .thinking {
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            background: var(--surface);
+            border-left: 3px solid var(--cyan);
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-dim);
+        }
+        .thinking .role {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--cyan);
+            margin: 0;
+        }
+        .thinking .label { font-size: 13px; color: var(--text-dim); }
+        .thinking-dots {
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+        }
+        .thinking-dots span {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--cyan);
+            animation: thinking-bounce 1.2s ease-in-out infinite;
+        }
+        .thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
+        .thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes thinking-bounce {
+            0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+            30% { transform: translateY(-4px); opacity: 1; }
+        }
+
         /* Input area */
         .input-area {
             flex-shrink: 0;
@@ -418,9 +458,9 @@ const API_BASE = window.__API_BASE || window.location.origin;
 const WS_URL = window.__WS_URL || `${window.location.origin.replace('http', 'ws')}/ws`;
 // Injected at deploy time; required by the proxy (X-Cost-Agent-Secret / api_secret).
 const API_SECRET = window.__API_SECRET || '';
-// Default WebSocket: API Gateway HTTP buffers SSE; WS streams AG-UI events live.
-// Local `ui/local_server.py` only implements SSE — switch the toggle there.
-let transport = 'ws';
+// CloudFront: WebSocket (API Gateway HTTP buffers SSE). Local server: SSE only.
+const isLocalHost = ['localhost', '127.0.0.1'].includes(location.hostname);
+let transport = isLocalHost ? 'sse' : 'ws';
 let ws = null;
 let threadId = null;
 let eventCount = 0;
@@ -429,6 +469,7 @@ let currentToolCalls = {};
 let currentReasoning = null;
 let agentState = {};
 let isProcessing = false;
+let thinkingEl = null;
 
 const SESSION_KEY = 'costAgentSessionId';
 
@@ -479,6 +520,7 @@ function resetSession() {
     sessionId();
     document.getElementById('messages').innerHTML = '';
     document.getElementById('events-log').innerHTML = '';
+    thinkingEl = null;
     eventCount = 0;
     document.getElementById('event-count').textContent = '0';
     setStatus('connected', 'new session');
@@ -516,6 +558,9 @@ async function sendMessage() {
     isProcessing = true;
     document.getElementById('send-btn').disabled = true;
     addUserMessage(msg);
+    showThinking();
+    // Yield so the loader paints before the long runtime wait.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     if (transport === 'sse') {
         await sendSSE(msg);
@@ -595,6 +640,7 @@ function sendWS(message) {
 }
 
 function finishProcessing() {
+    hideThinking();
     isProcessing = false;
     document.getElementById('send-btn').disabled = false;
     document.getElementById('user-input').focus();
@@ -608,28 +654,34 @@ function handleEvent(event) {
         // Lifecycle
         case 'RUN_STARTED':
             setStatus('streaming', 'agent running');
+            setThinkingLabel('Thinking');
             break;
         case 'RUN_FINISHED':
             setStatus('connected', 'idle');
             currentAssistantMsg = null;
+            hideThinking();
             if (transport === 'ws') finishProcessing();
             break;
         case 'RUN_ERROR':
             setStatus('error', event.error?.message || 'error');
+            hideThinking();
             addErrorMessage(event.error?.message || 'Unknown error');
             if (transport === 'ws') finishProcessing();
             break;
         case 'STEP_STARTED':
             setStatus('streaming', event.stepName || 'processing...');
+            setThinkingLabel(event.stepName || 'processing...');
             break;
         case 'STEP_FINISHED':
             break;
 
         // Text (Start-Content-End)
         case 'TEXT_MESSAGE_START':
+            hideThinking();
             currentAssistantMsg = createAssistantMessage(event.messageId);
             break;
         case 'TEXT_MESSAGE_CONTENT':
+            hideThinking();
             if (currentAssistantMsg) {
                 appendToMessage(currentAssistantMsg, event.delta);
             }
@@ -640,6 +692,7 @@ function handleEvent(event) {
 
         // Tool Calls (Start-Args-End-Result)
         case 'TOOL_CALL_START':
+            hideThinking();
             currentToolCalls[event.toolCallId] = createToolCall(event.toolCallId, event.toolName);
             break;
         case 'TOOL_CALL_ARGS':
@@ -670,6 +723,7 @@ function handleEvent(event) {
 
         // Reasoning (Start-Content-End)
         case 'REASONING_START':
+            hideThinking();
             currentReasoning = createReasoning(event.reasoningId);
             break;
         case 'REASONING_MESSAGE':
@@ -691,6 +745,36 @@ function setStatus(cls, text) {
     const el = document.getElementById('status');
     el.className = 'status ' + cls;
     el.textContent = text;
+}
+
+function showThinking(label = 'Thinking') {
+    hideThinking();
+    const el = document.createElement('div');
+    el.className = 'thinking';
+    el.id = 'thinking-loader';
+    el.innerHTML =
+        `<div class="role">Assistant</div>` +
+        `<span class="label">${escapeHtml(label)}</span>` +
+        `<span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span>`;
+    document.getElementById('messages').appendChild(el);
+    thinkingEl = el;
+    scrollMessages();
+}
+
+function setThinkingLabel(label) {
+    if (!thinkingEl) return;
+    const labelEl = thinkingEl.querySelector('.label');
+    if (labelEl) labelEl.textContent = label;
+}
+
+function hideThinking() {
+    if (thinkingEl) {
+        thinkingEl.remove();
+        thinkingEl = null;
+    } else {
+        const el = document.getElementById('thinking-loader');
+        if (el) el.remove();
+    }
 }
 
 function addUserMessage(text) {
@@ -833,7 +917,9 @@ function escapeHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Auto-connect WebSocket only when that transport is selected
+// Sync toggle UI + auto-connect WebSocket when that transport is selected
+document.getElementById('btn-sse').classList.toggle('active', transport === 'sse');
+document.getElementById('btn-ws').classList.toggle('active', transport === 'ws');
 if (transport === 'ws') connectWebSocket();
 </script>
 </body>
