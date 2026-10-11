@@ -53,7 +53,8 @@ MEMORY_PROMPT = """
 SHARED MEMORY
 Memory saved by earlier requests, shared by all users. Use it to skip rediscovery, never as
 evidence: every number still comes from a fresh query. If the data disagrees with a memory,
-trust the data and replace the memory.
+trust the data and replace the memory. The memory tools (remember, dispute, forget) are the one
+exception to the AWS read-only rule: they only change these memory records.
 
 Kinds (recall(kind, scope, query)):
 - resource-map, scope = service: where a resource is defined, who owns it, which code calls it.
