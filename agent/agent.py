@@ -80,6 +80,24 @@ from memory import configure as configure_shared_memory
 
 logger = logging.getLogger(__name__)
 
+
+def _configure_logging() -> None:
+    """Send this agent's own log records to stdout, which AgentCore ships to CloudWatch.
+
+    Without a handler, Python drops INFO records (only library warnings reached the log group).
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    level = os.environ.get("AGENT_LOG_LEVEL", "INFO").upper()
+    for name in (__name__, "github_fix", "memory"):
+        log = logging.getLogger(name)
+        log.setLevel(level)
+        log.addHandler(handler)
+        log.propagate = False
+
+
+_configure_logging()
+
 _AGENT_DIR = Path(__file__).resolve().parent
 _BUNDLED_BIN = _AGENT_DIR / "bin"
 if _BUNDLED_BIN.is_dir():
@@ -748,7 +766,9 @@ def github_clone_repo(owner: str, repo: str, base_branch: str = "main") -> str:
             GITHUB_DEFAULT_OWNER,
         )
     except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
+        logger.warning("github_clone_repo %s/%s failed: %s", owner, repo, e)
         return json.dumps({"error": str(e)})
+    logger.info("github_clone_repo %s/%s %s head=%s", owner, repo, result["action"], result["head_sha"])
     return json.dumps(result, indent=2)
 
 
@@ -794,7 +814,9 @@ def github_create_fix_pr(
             path_list,
         )
     except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
+        logger.warning("github_create_fix_pr %s/%s %s failed: %s", owner, repo, branch, e)
         return json.dumps({"error": str(e)})
+    logger.info("github_create_fix_pr %s/%s %s -> %s", owner, repo, branch, result["pull_request_url"])
     return json.dumps(result, indent=2)
 
 

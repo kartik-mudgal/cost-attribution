@@ -2,19 +2,87 @@
 
 import base64
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from github_fix import (
     BRANCH_PATTERN,
     _git_auth_args,
     _git_env,
+    _redact,
+    _run_git,
     clone_relative_path,
+    clone_repository,
     create_github_pull_request,
     public_remote,
     validate_branch,
     validate_owner_repo,
 )
+
+TOKEN = "ghp_secretTokenValue123"
+
+
+class TestRunGit(unittest.TestCase):
+    def test_failure_carries_git_message_without_the_credential(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError) as ctx:
+                _run_git(["remote", "set-url", "origin", "https://example.invalid/x.git"], Path(tmp), TOKEN)
+        message = str(ctx.exception)
+        self.assertIn("git remote failed (exit 128)", message)
+        self.assertIn("not a git repository", message)
+        self.assertNotIn(TOKEN, message)
+        self.assertNotIn(base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode(), message)
+
+    def test_check_false_returns_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _run_git(["rev-parse", "HEAD"], Path(tmp), TOKEN, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_timeout_does_not_leak_the_command(self):
+        with patch("github_fix.subprocess.run", side_effect=subprocess.TimeoutExpired(["git", TOKEN], 1)):
+            with self.assertRaises(RuntimeError) as ctx:
+                _run_git(["clone", "x"], Path("."), TOKEN)
+        self.assertNotIn(TOKEN, str(ctx.exception))
+
+    def test_redact_hides_token_and_basic_credential(self):
+        encoded = base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode()
+        self.assertEqual(_redact(f"a {TOKEN} b {encoded}", TOKEN), "a *** b ***")
+
+
+class TestCloneRepository(unittest.TestCase):
+    def test_failed_clone_leaves_no_directory(self):
+        def fake_run(args, cwd, token, check=True):
+            if args[0] == "clone":
+                Path(args[-1]).mkdir(parents=True)
+                raise RuntimeError("git clone failed (exit 128): remote: invalid credentials")
+            raise AssertionError(f"unexpected git {args[0]}")
+
+        with tempfile.TemporaryDirectory() as tmp, patch("github_fix._run_git", side_effect=fake_run):
+            with self.assertRaises(RuntimeError):
+                clone_repository(Path(tmp), "devrev", "marina", "main", TOKEN, "devrev")
+            self.assertFalse((Path(tmp) / "repos/devrev/marina").exists())
+
+    def test_broken_clone_is_replaced(self):
+        calls = []
+
+        def fake_run(args, cwd, token, check=True):
+            calls.append(args[0])
+            if args[0] == "remote":
+                raise RuntimeError("git remote failed (exit 128): fatal: detected dubious ownership")
+            if args[0] == "clone":
+                (Path(args[-1]) / ".git").mkdir(parents=True)
+            return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, patch("github_fix._run_git", side_effect=fake_run):
+            (Path(tmp) / "repos/devrev/marina/.git").mkdir(parents=True)
+            (Path(tmp) / "repos/devrev/marina/stale.txt").write_text("x")
+            out = clone_repository(Path(tmp), "devrev", "marina", "main", TOKEN, "devrev")
+            self.assertFalse((Path(tmp) / "repos/devrev/marina/stale.txt").exists())
+        self.assertEqual(calls, ["remote", "clone", "rev-parse"])
+        self.assertEqual(out["action"], "cloned")
 
 
 class TestGithubFixValidation(unittest.TestCase):
@@ -44,9 +112,11 @@ class TestGithubFixValidation(unittest.TestCase):
     def test_git_auth_args_uses_basic_x_access_token(self):
         args = _git_auth_args("secret-token-value")
         expected = base64.b64encode(b"x-access-token:secret-token-value").decode()
-        self.assertEqual(args, ["-c", f"http.extraHeader=Authorization: Basic {expected}"])
-        self.assertNotIn("secret-token-value", public_remote("devrev", "wisp"))
-        self.assertNotIn("Bearer", args[1])
+        self.assertIn(f"http.extraHeader=Authorization: Basic {expected}", args)
+        self.assertIn("safe.directory=*", args)
+        self.assertIn("credential.helper=", args)
+        self.assertNotIn("secret-token-value", " ".join(args))
+        self.assertNotIn("Bearer", " ".join(args))
 
     def test_git_env_disables_terminal_prompt(self):
         env = _git_env()
