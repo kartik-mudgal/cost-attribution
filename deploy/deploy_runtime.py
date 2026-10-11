@@ -54,7 +54,7 @@ spec = dict(
         # User downloads. Separate from the code-zip bucket cost-agent-artifacts-*.
         "ARTIFACT_BUCKET": f"cost-agent-user-artifacts-{ACCOUNT}",
         "ARTIFACT_PREFIX": "generated",
-        "ARTIFACT_URL_TTL_S": "3600",
+        "ARTIFACT_URL_TTL_S": "86400",
     },
     lifecycleConfiguration={"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
 )

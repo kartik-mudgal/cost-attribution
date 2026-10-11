@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_BUCKET = "cost-agent-user-artifacts-270149200236"
 DEFAULT_PREFIX = "generated"
-DEFAULT_URL_TTL_S = 3600
+DEFAULT_URL_TTL_S = 86400
 MAX_PRESIGN_TTL_S = 7 * 24 * 60 * 60
 DEFAULT_MAX_BYTES = 20 * 1024 * 1024
 
@@ -125,6 +125,24 @@ def publish_workspace_file(
     }
 
 
+def format_expiry(seconds: int | str | None) -> str:
+    """Human-readable lifetime for download messages."""
+    try:
+        ttl = int(seconds)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "unknown time"
+    if ttl >= 86400 and ttl % 86400 == 0:
+        days = ttl // 86400
+        return "1 day" if days == 1 else f"{days} days"
+    if ttl >= 3600 and ttl % 3600 == 0:
+        hours = ttl // 3600
+        return "1 hour" if hours == 1 else f"{hours} hours"
+    if ttl >= 60 and ttl % 60 == 0:
+        minutes = ttl // 60
+        return "1 minute" if minutes == 1 else f"{minutes} minutes"
+    return "1 second" if ttl == 1 else f"{ttl} seconds"
+
+
 def format_download_message(items: list[dict]) -> str:
     """Assistant text listing presigned URLs from this run."""
     if not items:
@@ -133,6 +151,6 @@ def format_download_message(items: list[dict]) -> str:
     for item in items:
         lines.append(
             f"- {item.get('key', item.get('filename', 'artifact'))}: {item['download_url']} "
-            f"(expires in {item.get('expires_in_seconds', '?')} seconds)"
+            f"(expires in {format_expiry(item.get('expires_in_seconds'))})"
         )
     return "\n".join(lines)

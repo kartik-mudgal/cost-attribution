@@ -221,7 +221,7 @@ append_workspace_file, one section per call, using the answer's sections: verdic
 checked, then each finding, then not an issue, then totals. Cite query ids and figures in
 evidence. Do not paste raw query rows into the file, and do not put the whole report in one
 call. After the last section, call publish_artifact once. Include each download_url in the
-answer and say that it expires after expires_in_seconds. Never invent a download URL."""
+answer and say that it expires in 1 day. Never invent a download URL."""
 
 _CONTINUE_REPORT = (
     "The previous response hit the output limit and was cut off. Continue the same report. "
@@ -458,7 +458,7 @@ def publish_artifact(name: str) -> str:
     """Upload a workspace file to the artifact bucket and return a presigned download URL.
 
     Call this for every artifact the user should keep. Include download_url in the answer.
-    The link expires after expires_in_seconds (sooner if the signing credentials expire).
+    The link expires in 1 day (sooner if the signing credentials expire).
 
     Args:
         name: Workspace-relative path, for example artifacts/sqs-report.md.

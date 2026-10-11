@@ -167,10 +167,24 @@ class TestDownloadMessage(unittest.TestCase):
         text = format_download_message([{
             "key": "generated/session-abc/artifacts/report.md",
             "download_url": "https://example.invalid/report",
-            "expires_in_seconds": 3600,
+            "expires_in_seconds": 86400,
         }])
         self.assertIn("https://example.invalid/report", text)
-        self.assertIn("expires in 3600 seconds", text)
+        self.assertIn("expires in 1 day", text)
+
+    def test_formats_hours_and_seconds(self):
+        hour = format_download_message([{
+            "key": "a",
+            "download_url": "https://example.invalid/a",
+            "expires_in_seconds": 3600,
+        }])
+        self.assertIn("expires in 1 hour", hour)
+        seconds = format_download_message([{
+            "key": "b",
+            "download_url": "https://example.invalid/b",
+            "expires_in_seconds": 90,
+        }])
+        self.assertIn("expires in 90 seconds", seconds)
 
     def test_empty(self):
         self.assertEqual(format_download_message([]), "")
@@ -205,7 +219,7 @@ class TestWiring(unittest.TestCase):
     def test_runtime_env_points_at_dedicated_bucket(self):
         source = (REPO_ROOT / "deploy" / "deploy_runtime.py").read_text()
         self.assertIn('ARTIFACT_BUCKET": f"cost-agent-user-artifacts-{ACCOUNT}"', source)
-        self.assertIn('"ARTIFACT_URL_TTL_S": "3600"', source)
+        self.assertIn('"ARTIFACT_URL_TTL_S": "86400"', source)
 
     def test_package_bundles_artifacts_module(self):
         source = (REPO_ROOT / "deploy" / "package.sh").read_text()

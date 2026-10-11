@@ -215,7 +215,7 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | `GRAFANA_MCP_SECRET_JSON_KEY` | `x-litellm-api-key` | JSON key inside that secret |
 | `ARTIFACT_BUCKET` | `cost-agent-user-artifacts-270149200236` | Dedicated bucket for files the user can download |
 | `ARTIFACT_PREFIX` | `generated` | Key prefix inside that bucket |
-| `ARTIFACT_URL_TTL_S` | `3600` | Presigned URL lifetime in seconds (60 to 604800) |
+| `ARTIFACT_URL_TTL_S` | `86400` | Presigned URL lifetime in seconds (60 to 604800) |
 
 ## Artifact downloads
 
@@ -229,7 +229,7 @@ presigned GET URL. The answer includes that URL, and the run also appends an "Ar
 downloads" message so the link is in the response even if the model skips it.
 
 The bucket stays private. Anyone with the URL can download the object until the URL expires
-(one hour by default). The link also dies when the runtime role credentials that signed it
+(one day by default). The link also dies when the runtime role credentials that signed it
 expire, if that happens first. Create the bucket with the one-time `aws s3 mb` command above
 before the first publish. The runtime role needs `s3:PutObject` and `s3:GetObject` on
 `arn:aws:s3:::cost-agent-user-artifacts-270149200236/*` (`UserArtifacts` in
