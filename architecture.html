@@ -93,10 +93,53 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
   </div>
 </header>
 
+<!-- DAILY DEMO -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="stage">Implemented · Daily cost report</span>
+    <h2>End-to-end: CUR → DevRev workflow → agent → Slack</h2>
+    <p>Production-shaped demo path: billing data lands in S3, a scheduled DevRev workflow starts an async AgentCore session, and the finished markdown report is delivered through a webhook into Slack.</p>
+  </div>
+  <div class="canvas"><div class="flow">
+    <div class="row">
+      <div class="box aws"><span class="k">AWS Billing</span><b>CUR export schedule</b><small>Refreshes CUR 2.0 Parquet in S3 up to several times per day; treat as the daily billing snapshot</small></div>
+      <div class="box aws store"><span class="k">S3</span><b>CUR Parquet</b><small>Resource IDs, hourly rows → Glue <code>hackathon_cur.cost_report</code></small></div>
+      <div class="box aws store"><span class="k">S3</span><b>CloudWatch Parquet (demo)</b><small>October 2026 scrape → view <code>cloudwatch_metrics</code></small></div>
+    </div>
+    <div class="arrow"><span>Athena workgroup cost-agent</span></div>
+    <div class="box aws store"><span class="k">Athena</span><b>Read-only SQL</b><small><code>athena_query</code> in the agent; CUR + static metrics, no live CloudWatch API</small></div>
+    <div class="arrow"><span>schedule · daily</span></div>
+    <div class="frame dr"><span class="tag">DevRev · scheduled workflow</span>
+      <div class="box devrev"><span class="k">1</span><b>Start agent session</b><small>POST invocations with <code>async: true</code>, prompt, <code>webhook_url</code>, stable <code>session_id</code></small></div>
+      <div class="arrow"><span>202 accepted</span></div>
+      <div class="box agent"><span class="k">AgentCore Runtime</span><b>Cost investigator</b><small>Strands + Claude on Bedrock; skills on demand; optional Grafana MCP via AI gateway</small></div>
+      <div class="arrow"><span>post_async_webhook</span></div>
+      <div class="box devrev"><span class="k">2</span><b>Webhook handler</b><small>JSON <code>{"session_id","body"}</code> with full report markdown</small></div>
+    </div>
+    <div class="arrow"><span>post message</span></div>
+    <div class="box out"><span class="k">Slack</span><b>Channel digest</b><small>Daily AWS cost analysis report (+ presigned artifact links when published)</small></div>
+  </div></div>
+
+  <div class="tbl"><table>
+    <thead><tr><th>Skill</th><th>Role in the daily run</th></tr></thead>
+    <tbody>
+      <tr><td><code>cur-athena</code></td><td>CUR schema, billing window, investigation pattern before any cost SQL</td></tr>
+      <tr><td><code>cur-*</code> (per service)</td><td>SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache, Bedrock waste checks and line-item semantics</td></tr>
+      <tr><td><code>cloudwatch-metrics</code></td><td>October 2026 daily metrics from <code>cloudwatch_metrics</code></td></tr>
+      <tr><td><code>github-code-lookup</code></td><td>Map resources to Terraform / Helm and calling services</td></tr>
+      <tr><td><code>marina-deployments</code></td><td>Correlate jumps to <code>image.tag</code> deploys</td></tr>
+      <tr><td><code>github-fix-pr</code></td><td>Optional: open <code>cost-fix/*</code> PRs when a fix is approved</td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--muted);font-size:.9rem;margin:0">Narrative and Mermaid diagrams: <code>README.md</code> · <code>ui/README.md</code> (invoke + webhook)</p>
+</section>
+
+<div class="divider"></div>
+
 <!-- PHASE 1 -->
 <section class="phase">
   <div class="phase-head">
-    <span class="stage">Phase 1 · Hackathon build</span>
+    <span class="stage">Phase 1 · Hackathon build (alternate design)</span>
     <h2>Resource-level detection and explanation</h2>
     <p>Everything runs in AWS. Code computes every number; the agent is called only for flagged resources and explains them using read-only tools.</p>
   </div>
