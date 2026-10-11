@@ -147,13 +147,9 @@ uv run --with boto3 python deploy/invoke.py "Which SQS queues changed most in co
 # Reuse a session to keep the same workspace (the ID must be at least 33 characters):
 uv run --with boto3 python deploy/invoke.py "Continue from your notes." session-<id-from-previous-call>
 
-# Optional third arg / AGENTCORE_USER_ID: runtimeUserId for AgentCore Identity (github-pat).
-# Default is cost-investigator. Required for GitHub tools — without it @requires_api_key fails.
+# Optional third arg / AGENTCORE_USER_ID: runtimeUserId (not required for GitHub; PAT comes from Secrets Manager).
 uv run --with boto3 python deploy/invoke.py "Search github for marina" session-$(uuidgen | tr -d -) my-user
 ```
-
-`invoke.py` always sends `runtimeUserId` so the runtime can mint a workload access token for
-Identity (provider `github-pat` on workload `cost_investigator-jnlRkABJRb`).
 
 `invoke.py` reads the runtime ARN from `deploy/build/runtime.json`. On a fresh clone that file won't
 exist. You can either run `deploy_runtime.py` (which redeploys from `last_key`, so run `package.sh`
@@ -177,8 +173,9 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | --- | --- | --- |
 | `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
 | `MODEL_ID` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Bedrock model or inference profile |
-| `GITHUB_PAT_PROVIDER` | `github-pat` | AgentCore Identity API-key credential provider name |
 | `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
+| `GITHUB_PAT_SECRET_ARN` | AgentCore-managed `github-pat` secret | Secrets Manager ARN for the GitHub PAT |
+| `GITHUB_PAT_SECRET_JSON_KEY` | `api_key_value` | JSON key inside that secret |
 | `SKILLS_DIR` | `<alongside agent.py>/skills` | Bundled Strands skills directory |
 | `ATHENA_REGION` | `us-west-2` | Region of the Athena workgroup and Glue catalog |
 | `ATHENA_DATABASE` | `hackathon_cur` | Glue database holding the CUR table |
@@ -208,7 +205,7 @@ Bundled today:
 
 | Skill | When to use |
 | --- | --- |
-| `github-code-lookup` | Fetch GitHub PAT via Identity and access `devrev` org repos |
+| `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
 | `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
 | `cur-sqs` | SQS analysis: billed operations, waste checks (URL lookups, batching, empty receives), example queries |
 | `cur-dynamodb` | DynamoDB analysis: on-demand vs provisioned, storage and PITR, Streams, item-size signals, example queries |
@@ -219,22 +216,24 @@ and add its product code to the scope table in `cur-athena`.
 Add a new skill by creating `agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
 `description`) and markdown instructions, then redeploy.
 
-## GitHub credential (AgentCore Identity)
+## GitHub credential (Secrets Manager)
 
-Store a GitHub PAT once (do not put it in env vars or the zip):
+The agent reads the GitHub PAT with `secretsmanager:GetSecretValue` (see `GithubPatSecret` in
+`deploy/role-policy.json`). By default it uses the secret created when you stored the PAT in
+AgentCore Identity (JSON field `api_key_value`):
 
 ```bash
 aws bedrock-agentcore-control create-api-key-credential-provider \
   --name github-pat --api-key "<token>" --region us-west-2
+# Note the apiKeySecretArn from the response → GITHUB_PAT_SECRET_ARN
 ```
 
-The runtime role must allow `bedrock-agentcore:GetResourceApiKey` on that provider and
-`secretsmanager:GetSecretValue` on the managed secret (see `deploy/role-policy.json`). Agent tools
-fetch the PAT with `@requires_api_key(provider_name="github-pat")`.
+Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
+`GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
 
 ## Status
 
-Workspace tools, GitHub code tools (via `github-pat`), the `athena_query` tool and the CUR skills
-are in place. Still to add in `agent/agent.py`: `get_cloudwatch` and `describe_resource`. Until
-then the skills tell the agent which CloudWatch metric would confirm a finding and to lower its
-confidence.
+Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool and the CUR
+skills are in place. Still to add in `agent/agent.py`: `get_cloudwatch` and `describe_resource`.
+Until then the skills tell the agent which CloudWatch metric would confirm a finding and to lower
+its confidence.
