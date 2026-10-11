@@ -10,7 +10,8 @@ are visible in later invocations of the same session.
 
 When AGENTCORE_MEMORY_ID is set, short-term conversation turns are loaded and
 saved via AgentCore Memory (AgentCoreMemorySessionManager) keyed by the
-Runtime session id and actor id. No long-term strategies are configured.
+Runtime session id and actor id. The same memory resource also holds shared
+long-term records (memory.py: recall and remember tools), shared by all users.
 
 GitHub access reads a PAT from AWS Secrets Manager (JSON key api_key_value).
 Default secret is the AgentCore-managed github-pat vault entry; override with
@@ -69,6 +70,8 @@ from artifacts import (
 )
 from devrev_issues import create_issue as devrev_create_work
 from github_fix import clone_repository, create_fix_pull_request
+from memory import MEMORY_PROMPT
+from memory import configure as configure_shared_memory
 
 logger = logging.getLogger(__name__)
 
@@ -838,6 +841,7 @@ TOOLS = [
     github_create_fix_pr,
     devrev_create_issue,
 ]
+MEMORY_TOOLS = configure_shared_memory(AGENTCORE_MEMORY_ID, AWS_REGION)
 
 
 def _agui_event(event_type: str, **data: Any) -> dict:
@@ -948,8 +952,8 @@ def _build_agent(session_manager: AgentCoreMemorySessionManager | None = None) -
     grafana = _grafana_mcp()
     kwargs: dict[str, Any] = {
         "model": _model(),
-        "system_prompt": SYSTEM_PROMPT,
-        "tools": TOOLS + ([grafana] if grafana else []),
+        "system_prompt": SYSTEM_PROMPT + (MEMORY_PROMPT if MEMORY_TOOLS else ""),
+        "tools": TOOLS + MEMORY_TOOLS + ([grafana] if grafana else []),
         "plugins": [_skills_plugin()],
     }
     if session_manager is not None:

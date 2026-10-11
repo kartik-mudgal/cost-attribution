@@ -139,6 +139,18 @@
         "bedrock-agentcore:DeleteEvent"
       ],
       "Resource": "arn:aws:bedrock-agentcore:us-west-2:270149200236:memory/cost_investigator_stm-*"
+    },
+    {
+      "Sid": "AgentCoreMemorySharedRecords",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:RetrieveMemoryRecords",
+        "bedrock-agentcore:GetMemoryRecord",
+        "bedrock-agentcore:BatchCreateMemoryRecords",
+        "bedrock-agentcore:BatchUpdateMemoryRecords",
+        "bedrock-agentcore:BatchDeleteMemoryRecords"
+      ],
+      "Resource": "arn:aws:bedrock-agentcore:us-west-2:270149200236:memory/cost_investigator_stm-*"
     }
   ]
 }

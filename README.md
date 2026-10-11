@@ -369,3 +369,66 @@ agent is told to stop at about 50 tool calls.
 The prompt hard-codes the data window (CUR 2026-10-01 to 2026-10-10, newest settled day
 2026-10-08) because the data is a static snapshot. Update it, and the dates in `cur-athena`,
 if newer CUR data is loaded.
+
+## Shared memory (learning from past requests)
+
+`agent/memory.py` gives the agent long-term memory shared by all users, stored as records in the
+same AgentCore Memory resource as the short-term turns (`AGENTCORE_MEMORY_ID`). It is on whenever
+that variable is set.
+
+Memory is split by kind, so the agent recalls only what the current step needs:
+
+| Namespace | Holds | Recalled for |
+| --- | --- | --- |
+| `/cost-agent/resource-map/<service>` | Where a resource is defined, who owns it, which code calls it | Deep dives; anomalies once the resource is known |
+| `/cost-agent/queries/<service or all>` | SQL that answered a kind of question | Deep dives |
+| `/cost-agent/conclusions/<service>` | Past findings and their outcome (accepted, rejected, not an issue) | Overviews, deep dives, anomalies |
+| `/cost-agent/lessons/<overview, deep-dive, anomaly>` | What made that kind of request faster | Start of that request type |
+
+Tools:
+
+- `recall(kind, scope, query)` searches one namespace.
+- `remember(kind, scope, fact, evidence, files, replaces)` saves one verified fact. With
+  `replaces` it updates that record; a near-duplicate of an existing record refreshes it instead
+  of adding another.
+- `dispute(record_id, reason)` marks a record as possibly wrong.
+- `forget(record_id, reason)` deletes it. Both only touch records under the shared namespaces.
+
+Records are written directly (`BatchCreateMemoryRecords`); no strategy extracts them from
+conversations, so only facts the agent verified are stored. Memory is never evidence: figures
+in an answer always come from a fresh query. Quick questions don't use memory.
+
+### Keeping memory current
+
+Each record ends with `Evidence:`, `Files:` (resource maps), `Status:` and `Verified:` lines.
+
+- **Code changes:** resource maps store each file as `owner/repo path@sha`. The agent re-reads
+  those files and compares the sha: same sha, the record holds and the code search is skipped;
+  different sha, it re-reads the function and replaces the record; file missing, it searches
+  again and replaces the record.
+- **Age:** recall marks each record `fresh`, `expired` or `disputed`. Expired means re-verify
+  fully before use. Limits: conclusions 14 days, resource maps 30, lessons 60, queries 90.
+  Records older than twice the limit are deleted the next time they are recalled. Confirming a
+  record refreshes its `Verified:` date, so records in use stay fresh.
+- **User updates:** decisions only the user knows (accepted, rejected, fixed in a PR) replace the
+  conclusion with evidence "confirmed by user: …". Claims about code or data are checked first;
+  if they can't be checked, the record is disputed rather than changed.
+
+Measured on "Deep dive into hubble-parquet-ingest-queue, including code references":
+
+| Run | Tool calls | Code searches |
+| --- | --- | --- |
+| Empty memory | 36–37 | 10–14 |
+| Memory with matching file shas | 19 | 0 |
+| Memory with stale file shas | 27 | 4 (re-read files, replaced the record) |
+| "We merged the fix in PR #4521" | 2 | 0 (replaced the conclusion) |
+
+To test without touching the shared records, set `SHARED_MEMORY_ROOT` (e.g. `/cost-agent-test`).
+To see or clear what the agent has learned:
+
+```bash
+aws bedrock-agentcore list-memory-records --region us-west-2 \
+  --memory-id cost_investigator_stm-geZl5e2x3J --namespace-path /cost-agent/
+aws bedrock-agentcore delete-memory-record --region us-west-2 \
+  --memory-id cost_investigator_stm-geZl5e2x3J --memory-record-id <id>
+```
