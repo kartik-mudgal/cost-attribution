@@ -1,5 +1,10 @@
-"""Invoke the deployed runtime. Usage: python invoke.py "<prompt>" [session-id]"""
+"""Invoke the deployed runtime. Usage: python invoke.py "<prompt>" [session-id] [user-id]
+
+runtimeUserId is required for AgentCore Identity (@requires_api_key / github-pat).
+Without it the runtime does not mint a workload access token and GitHub tools fail.
+"""
 import json
+import os
 import pathlib
 import sys
 import uuid
@@ -8,13 +13,20 @@ import boto3
 
 arn = json.loads((pathlib.Path(__file__).parent / "build" / "runtime.json").read_text())["agentRuntimeArn"]
 prompt = sys.argv[1]
-session = sys.argv[2] if len(sys.argv) > 2 else f"session-{uuid.uuid4().hex}"  # must be >= 33 chars
+session = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else f"session-{uuid.uuid4().hex}"  # >= 33 chars
+user_id = (
+    sys.argv[3]
+    if len(sys.argv) > 3 and sys.argv[3]
+    else os.environ.get("AGENTCORE_USER_ID", "cost-investigator")
+)
 
 client = boto3.client("bedrock-agentcore", region_name="us-west-2")
 resp = client.invoke_agent_runtime(
     agentRuntimeArn=arn,
     runtimeSessionId=session,
+    runtimeUserId=user_id,
     payload=json.dumps({"prompt": prompt}).encode(),
 )
 print("session:", session)
+print("user:", user_id)
 print(resp["response"].read().decode())

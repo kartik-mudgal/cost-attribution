@@ -59,7 +59,7 @@ aws s3 mb s3://cost-agent-artifacts-270149200236 --region us-west-2
 aws iam create-role --role-name cost-agent-runtime-role \
   --assume-role-policy-document file://deploy/trust.json
 aws iam put-role-policy --role-name cost-agent-runtime-role \
-  --policy-name cost-agent-runtime \
+  --policy-name runtime \
   --policy-document file://deploy/role-policy.json
 ```
 
@@ -106,8 +106,10 @@ somewhere else without editing the script.
 
 ### CI deploy (merge to main)
 
-`.github/workflows/deploy.yml` runs `package.sh` then `deploy_runtime.py` on pushes to `main`
-that touch `agent/` or `deploy/` (and on manual `workflow_dispatch`).
+`.github/workflows/deploy.yml` applies `deploy/role-policy.json` to `cost-agent-runtime-role`,
+then runs `package.sh` and `deploy_runtime.py`, on pushes to `main` that touch `agent/` or
+`deploy/` (and on manual `workflow_dispatch`). Re-applying an unchanged policy document has no
+effect on permissions.
 
 Add these repository secrets (Settings → Secrets and variables → Actions):
 
@@ -121,6 +123,7 @@ The AWS principal behind those keys needs permission to:
 - `s3:PutObject` (and usually `s3:GetObject`) on `s3://cost-agent-artifacts-270149200236/*`
 - AgentCore control: create/update/get/list agent runtimes in `us-west-2`
 - `iam:PassRole` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
+- `iam:PutRolePolicy` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
 
 ## Invoke
 
@@ -132,7 +135,14 @@ uv run --with boto3 python deploy/invoke.py "Which SQS queues changed most in co
 
 # Reuse a session to keep the same workspace (the ID must be at least 33 characters):
 uv run --with boto3 python deploy/invoke.py "Continue from your notes." session-<id-from-previous-call>
+
+# Optional third arg / AGENTCORE_USER_ID: runtimeUserId for AgentCore Identity (github-pat).
+# Default is cost-investigator. Required for GitHub tools — without it @requires_api_key fails.
+uv run --with boto3 python deploy/invoke.py "Search github for marina" session-$(uuidgen | tr -d -) my-user
 ```
+
+`invoke.py` always sends `runtimeUserId` so the runtime can mint a workload access token for
+Identity (provider `github-pat` on workload `cost_investigator-jnlRkABJRb`).
 
 `invoke.py` reads the runtime ARN from `deploy/build/runtime.json`. On a fresh clone that file won't
 exist. You can either run `deploy_runtime.py` (which redeploys from `last_key`, so run `package.sh`

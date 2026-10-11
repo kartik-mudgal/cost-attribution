@@ -63,7 +63,7 @@
       ],
       "Resource": [
         "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default",
-        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default/workload-identity/cost_investigator-*"
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default/workload-identity/cost_investigator-jnlRkABJRb"
       ]
     },
     {
@@ -74,7 +74,7 @@
         "arn:aws:bedrock-agentcore:us-west-2:270149200236:token-vault/default",
         "arn:aws:bedrock-agentcore:us-west-2:270149200236:token-vault/default/apikeycredentialprovider/github-pat",
         "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default",
-        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default/workload-identity/cost_investigator-*"
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default/workload-identity/cost_investigator-jnlRkABJRb"
       ]
     },
     {
