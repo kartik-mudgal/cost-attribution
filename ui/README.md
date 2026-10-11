@@ -78,8 +78,9 @@ JSON mode (`"stream": false` or `"response_format": "json"`) returns:
 ### Workflow: async invoke + webhook
 
 Pass `"async": true` and a `webhook_url`. AgentCore accepts quickly and runs in the
-background. When ready, `notify_report_ready` POSTs the **entire report body** to
-that URL (`X-Session-Id` header set).
+background with an async-only system prompt and the `post_async_webhook` tool, which
+must POST **100%** of the report/answer to that URL (`X-Session-Id` header). Sync/chat
+invokes do not register that tool.
 
 ```bash
 SECRET=$(aws secretsmanager get-secret-value --secret-id cost-agent-ui/api-secret \
@@ -94,7 +95,7 @@ curl -sS -X POST 'https://<HttpApiUrl>/invocations' \
     \"async\": true,
     \"webhook_url\": \"$WEBHOOK\",
     \"session_id\": \"$SID\",
-    \"prompt\": \"Investigate SQS cost for October 2026. Write the full report, publish_artifact, then notify_report_ready with the entire report markdown as body.\"
+    \"prompt\": \"Investigate SQS cost for October 2026. Write the full report, publish_artifact, then post_async_webhook with the entire report markdown as body.\"
   }"
 # → 202 {"accepted":true,"session_id":"...","webhook_url":"..."}
 # Missing webhook_url → 400
