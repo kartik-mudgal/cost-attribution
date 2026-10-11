@@ -6,6 +6,10 @@ if the temporary credentials that signed it expire first.
 import re
 from pathlib import Path
 
+from report_html import render_report
+
+MARKDOWN_SUFFIXES = (".md", ".markdown")
+
 DEFAULT_BUCKET = "cost-agent-user-artifacts-270149200236"
 DEFAULT_PREFIX = "generated"
 DEFAULT_URL_TTL_S = 86400
@@ -90,24 +94,34 @@ def publish_workspace_file(
     ttl_s: int = DEFAULT_URL_TTL_S,
     max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> dict:
-    """Upload one workspace file and return its presigned GET URL."""
+    """Upload one workspace file and return its presigned GET URL.
+
+    A markdown report is published as an HTML page (report.md -> report.html) that opens in
+    the browser; the markdown file in the workspace is left unchanged.
+    """
     if not bucket:
         raise ValueError("ARTIFACT_BUCKET is not set")
     path = workspace_file(workspace, name)
-    size = path.stat().st_size
+    relative = path.relative_to(workspace.resolve()).as_posix()
+    if path.suffix.lower() in MARKDOWN_SUFFIXES:
+        body = render_report(path.read_text(encoding="utf-8"), path.name).encode("utf-8")
+        relative = Path(relative).with_suffix(".html").as_posix()
+    else:
+        body = path.read_bytes()
+    size = len(body)
     if size > max_bytes:
         raise ValueError(f"artifact is {size} bytes; limit is {max_bytes}")
-    relative = path.relative_to(workspace.resolve()).as_posix()
     key = object_key(session_id, relative, prefix=prefix)
-    content_type = content_type_for(path.name)
-    filename = download_filename(path.name)
+    content_type = content_type_for(relative)
+    filename = download_filename(relative)
+    disposition = "inline" if content_type.startswith("text/html") else "attachment"
     ttl = max(60, min(int(ttl_s), MAX_PRESIGN_TTL_S))
     s3_client.put_object(
         Bucket=bucket,
         Key=key,
-        Body=path.read_bytes(),
+        Body=body,
         ContentType=content_type,
-        ContentDisposition=f'attachment; filename="{filename}"',
+        ContentDisposition=f'{disposition}; filename="{filename}"',
     )
     url = s3_client.generate_presigned_url(
         "get_object",

@@ -47,11 +47,11 @@ class TestArtifactKeys(unittest.TestCase):
 
 
 class TestPublish(unittest.TestCase):
-    def test_publish_uploads_and_returns_presigned_url(self):
+    def test_markdown_report_is_published_as_html(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "artifacts").mkdir()
-            (root / "artifacts" / "report.md").write_text("# hi\n")
+            (root / "artifacts" / "report.md").write_text("# SQS report\n\nAction recommended\n")
             s3 = MagicMock()
             s3.generate_presigned_url.return_value = "https://example.invalid/report"
             result = publish_workspace_file(
@@ -61,20 +61,40 @@ class TestPublish(unittest.TestCase):
                 s3_client=s3,
                 ttl_s=3600,
             )
+            self.assertEqual((root / "artifacts" / "report.md").read_text(), "# SQS report\n\nAction recommended\n")
         self.assertEqual(result["download_url"], "https://example.invalid/report")
         self.assertEqual(result["bucket"], DEFAULT_BUCKET)
-        self.assertEqual(result["key"], "generated/session-abc/artifacts/report.md")
+        self.assertEqual(result["key"], "generated/session-abc/artifacts/report.html")
+        self.assertEqual(result["filename"], "report.html")
         self.assertEqual(result["expires_in_seconds"], 3600)
         put = s3.put_object.call_args.kwargs
         self.assertEqual(put["Bucket"], DEFAULT_BUCKET)
         self.assertEqual(put["Key"], result["key"])
-        self.assertEqual(put["ContentType"], "text/markdown; charset=utf-8")
-        self.assertEqual(put["ContentDisposition"], 'attachment; filename="report.md"')
-        self.assertTrue(put["Body"].startswith(b"# hi"))
+        self.assertEqual(put["ContentType"], "text/html; charset=utf-8")
+        self.assertEqual(put["ContentDisposition"], 'inline; filename="report.html"')
+        self.assertTrue(put["Body"].startswith(b"<!doctype html>"))
+        self.assertIn(b"<title>SQS report</title>", put["Body"])
+        self.assertEqual(result["bytes"], len(put["Body"]))
         args, kwargs = s3.generate_presigned_url.call_args
         self.assertEqual(args[0], "get_object")
         self.assertEqual(kwargs["Params"], {"Bucket": DEFAULT_BUCKET, "Key": result["key"]})
         self.assertEqual(kwargs["ExpiresIn"], 3600)
+
+    def test_other_files_upload_unchanged_as_attachments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "artifacts").mkdir()
+            (root / "artifacts" / "costs.csv").write_text("day,cost\n2026-10-08,307.15\n")
+            s3 = MagicMock()
+            s3.generate_presigned_url.return_value = "https://example.invalid/csv"
+            result = publish_workspace_file(
+                workspace=root, name="artifacts/costs.csv", session_id="session-abc", s3_client=s3
+            )
+        put = s3.put_object.call_args.kwargs
+        self.assertEqual(result["key"], "generated/session-abc/artifacts/costs.csv")
+        self.assertEqual(put["ContentType"], "text/csv; charset=utf-8")
+        self.assertEqual(put["ContentDisposition"], 'attachment; filename="costs.csv"')
+        self.assertEqual(put["Body"], b"day,cost\n2026-10-08,307.15\n")
 
     def test_ttl_is_clamped(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,7 +179,7 @@ class TestPublish(unittest.TestCase):
                 session_id="session-abc",
                 s3_client=s3,
             )
-        self.assertEqual(result["key"], "generated/session-abc/artifacts/report.md")
+        self.assertEqual(result["key"], "generated/session-abc/artifacts/report.html")
 
 
 class TestDownloadMessage(unittest.TestCase):
@@ -225,6 +245,8 @@ class TestWiring(unittest.TestCase):
         source = (REPO_ROOT / "deploy" / "package.sh").read_text()
         self.assertIn('"$ROOT/agent/artifacts.py"', source)
         self.assertIn('"$ROOT/agent/github_fix.py"', source)
+        self.assertIn('"$ROOT/agent/report_html.py"', source)
+        self.assertIn("markdown-it-py", (REPO_ROOT / "agent" / "requirements.txt").read_text())
 
 
 if __name__ == "__main__":
