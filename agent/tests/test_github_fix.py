@@ -1,5 +1,6 @@
 """Unit tests for github_fix helpers (no agent import)."""
 
+import base64
 import json
 import unittest
 from unittest.mock import MagicMock, patch
@@ -40,10 +41,12 @@ class TestGithubFixValidation(unittest.TestCase):
         self.assertEqual(url, "https://github.com/devrev/wisp.git")
         self.assertNotIn("x-access-token", url)
 
-    def test_git_auth_args_uses_bearer_header(self):
+    def test_git_auth_args_uses_basic_x_access_token(self):
         args = _git_auth_args("secret-token-value")
-        self.assertEqual(args, ["-c", "http.extraHeader=Authorization: Bearer secret-token-value"])
+        expected = base64.b64encode(b"x-access-token:secret-token-value").decode()
+        self.assertEqual(args, ["-c", f"http.extraHeader=Authorization: Basic {expected}"])
         self.assertNotIn("secret-token-value", public_remote("devrev", "wisp"))
+        self.assertNotIn("Bearer", args[1])
 
     def test_git_env_disables_terminal_prompt(self):
         env = _git_env()

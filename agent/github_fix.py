@@ -1,5 +1,6 @@
 """Clone a GitHub repo into the session workspace and open a fix PR."""
 
+import base64
 import json
 import os
 import re
@@ -38,8 +39,13 @@ def public_remote(owner: str, repo: str) -> str:
 
 
 def _git_auth_args(token: str) -> list[str]:
-    """HTTPS auth via header; never put the token in the remote URL."""
-    return ["-c", f"http.extraHeader=Authorization: Bearer {token.strip()}"]
+    """Git HTTPS auth via Basic header; never put the token in the remote URL.
+
+    GitHub's git smart-HTTP endpoints reject Bearer; they require
+    Basic base64(x-access-token:<pat>). REST API calls still use Bearer separately.
+    """
+    basic = base64.b64encode(f"x-access-token:{token.strip()}".encode()).decode()
+    return ["-c", f"http.extraHeader=Authorization: Basic {basic}"]
 
 
 def _git_env() -> dict[str, str]:

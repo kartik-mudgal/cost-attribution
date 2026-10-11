@@ -30,7 +30,7 @@ presigned download URL for each file.
 
 With github-fix-pr, the agent may clone devrev repos under workspace/repos/, edit files with
 edit_workspace_file, and open fix PRs via github_clone_repo and github_create_fix_pr (`git` on PATH;
-PAT from Secrets Manager as an HTTP Bearer header; PRs via GitHub REST API).
+PAT from Secrets Manager for git Basic auth and REST Bearer; PRs via GitHub REST API).
 
 Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
 immediately; the investigation continues in a background thread (AgentCore async

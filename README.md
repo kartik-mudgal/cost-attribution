@@ -292,9 +292,10 @@ aws bedrock-agentcore-control create-api-key-credential-provider \
 Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
 `GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
 
-`github-fix-pr` uses the same PAT as `Authorization: Bearer` on `git clone` / `git push` (via
-`http.extraHeader`) and on the GitHub REST API for PRs (**git** must be on the AgentCore runtime
-PATH). Remote URLs never embed the token.
+`github-fix-pr` uses the same PAT for `git clone` / `git push` as
+`Authorization: Basic` (base64 of `x-access-token:<pat>` via `http.extraHeader`) and for the
+GitHub REST API as `Authorization: Bearer`. **git** must be on the AgentCore runtime PATH.
+Remote URLs never embed the token.
 
 ## Grafana MCP server
 
