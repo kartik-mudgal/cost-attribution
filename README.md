@@ -258,6 +258,9 @@ Bundled today:
 | Skill | When to use |
 | --- | --- |
 | `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
+| `marina-deployments` | Correlate cost/metric windows to marina `image.tag` deploys and commits |
+| `github-fix-pr` | Clone a `devrev` repo in the workspace and open a `cost-fix/*` PR with the PAT |
+| `devrev-issue` | File a cost finding to DevRev via `devrev_create_issue` (fixed part/team/tag) |
 | `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
 | `cur-sqs` | SQS: request mix, batching, empty receives, top cost drivers and metrics |
 | `cur-dynamodb` | DynamoDB: on-demand vs provisioned, storage, PITR, Streams, item size |
@@ -289,6 +292,33 @@ aws bedrock-agentcore-control create-api-key-credential-provider \
 
 Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
 `GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
+
+## DevRev issue credential (Secrets Manager)
+
+`devrev_create_issue` calls `works.create` on the DevRev gateway using a short-lived personal
+access token stored in Secrets Manager (`DevrevPatSecret` in `deploy/role-policy.json`).
+
+```bash
+export AWS_PROFILE=hackathon
+export DEVREV_PAT='<your DevRev PAT (JWT)>'
+uv run --with boto3 python deploy/create_devrev_secret.py
+# writes deploy/build/devrev-secret.json with the full secret ARN
+```
+
+Then redeploy so `deploy_runtime.py` picks up `DEVREV_PAT_SECRET_ARN` from that file. The secret
+JSON shape is `{"pat":"<token>"}` (`DEVREV_PAT_SECRET_JSON_KEY` defaults to `pat`). Do not commit
+tokens or `deploy/build/devrev-secret.json`.
+
+Routing for every filed issue (override with env vars on the runtime if needed):
+
+| Variable | Default (cost queue) |
+| --- | --- |
+| `DEVREV_ISSUE_APPLIES_TO_PART` | `don:core:dvrv-us-1:devo/0:feature/2971` |
+| `DEVREV_ISSUE_OWNED_BY` | `don:identity:dvrv-us-1:devo/0:svcacc/273` |
+| `DEVREV_ISSUE_SPACE` | `don:identity:dvrv-us-1:devo/0:space/17H9CvPAF` |
+| `DEVREV_ISSUE_TAG_ID` | `don:core:dvrv-us-1:devo/0:tag/191028` |
+| `DEVREV_ISSUE_STAGE_ID` | `don:core:dvrv-us-1:devo/0:custom_stage/16` |
+| `DEVREV_ISSUE_PRIORITY` | `3` |
 
 ## Grafana MCP server
 

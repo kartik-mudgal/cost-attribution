@@ -26,6 +26,11 @@ GRAFANA_MCP_URL (off by default). Its virtual key is read from Secrets Manager
 
 User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns a
 presigned download URL for each file.
+
+With github-fix-pr, the agent may clone devrev repos under workspace/repos/ and open fix PRs
+via github_clone_repo and github_create_fix_pr (git must be on the runtime PATH).
+
+DevRev issues use devrev_create_issue with a PAT from Secrets Manager (DEVREV_PAT_SECRET_ARN).
 """
 import base64
 import contextvars
@@ -33,6 +38,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -61,6 +67,8 @@ from artifacts import (
     publish_workspace_file,
     safe_session_id,
 )
+from devrev_issues import create_issue as devrev_create_work
+from github_fix import clone_repository, create_fix_pull_request
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +102,37 @@ GRAFANA_MCP_SECRET_ARN = os.environ.get(
     "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
 )
 GRAFANA_MCP_SECRET_JSON_KEY = os.environ.get("GRAFANA_MCP_SECRET_JSON_KEY", "x-litellm-api-key")
+DEVREV_API_BASE = os.environ.get("DEVREV_API_BASE", "https://app.devrev.ai/api/gateway/internal")
+DEVREV_PAT_SECRET_ARN = os.environ.get(
+    "DEVREV_PAT_SECRET_ARN",
+    "arn:aws:secretsmanager:us-west-2:270149200236:secret:cost-agent-devrev-pat",
+)
+DEVREV_PAT_SECRET_JSON_KEY = os.environ.get("DEVREV_PAT_SECRET_JSON_KEY", "pat")
+DEVREV_ISSUE_APPLIES_TO_PART = os.environ.get(
+    "DEVREV_ISSUE_APPLIES_TO_PART",
+    "don:core:dvrv-us-1:devo/0:feature/2971",
+)
+DEVREV_ISSUE_OWNED_BY = [
+    x.strip()
+    for x in os.environ.get(
+        "DEVREV_ISSUE_OWNED_BY",
+        "don:identity:dvrv-us-1:devo/0:svcacc/273",
+    ).split(",")
+    if x.strip()
+]
+DEVREV_ISSUE_SPACE = os.environ.get(
+    "DEVREV_ISSUE_SPACE",
+    "don:identity:dvrv-us-1:devo/0:space/17H9CvPAF",
+)
+DEVREV_ISSUE_TAG_ID = os.environ.get(
+    "DEVREV_ISSUE_TAG_ID",
+    "don:core:dvrv-us-1:devo/0:tag/191028",
+)
+DEVREV_ISSUE_STAGE_ID = os.environ.get(
+    "DEVREV_ISSUE_STAGE_ID",
+    "don:core:dvrv-us-1:devo/0:custom_stage/16",
+)
+DEVREV_ISSUE_PRIORITY = int(os.environ.get("DEVREV_ISSUE_PRIORITY", "3"))
 # Dedicated bucket for files the user can download. Not the code-zip bucket.
 ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", DEFAULT_BUCKET)
 ARTIFACT_PREFIX = os.environ.get("ARTIFACT_PREFIX", DEFAULT_PREFIX)
@@ -110,7 +149,11 @@ RULES FOR EVERY REQUEST
   values, file paths, function names or URLs.
 - Every number you report comes from a query; cite its Athena query ID. Every code claim
   cites repo, file and function.
-- All your actions are read-only. Never create, change or delete anything in AWS or GitHub.
+- AWS is read-only. Never create, change or delete anything in AWS.
+- GitHub writes are allowed only when you load github-fix-pr and the user asked for a code fix
+  or explicitly approved opening a PR; use github_clone_repo and github_create_fix_pr only then.
+- DevRev writes are allowed only when you load devrev-issue and the user asked to file an issue
+  or agreed after you proposed one; use devrev_create_issue only then.
 - Keep working notes in the workspace so a later call in the same session can continue.
 
 DATA
@@ -121,6 +164,13 @@ DATA
   cloudwatch-metrics skill before using it. It is the only source of metric values.
 - Code: GitHub tools for devrev org repos. Load github-code-lookup before using them. They
   load a PAT from Secrets Manager; never print or request the token.
+- Deploys: devrev/marina image.tag changes per env. Load marina-deployments when correlating
+  a cost or metric change to a deploy (anomalies, deep dives); use github_list_commits on the
+  service env values.yaml path.
+- Fix PRs: load github-fix-pr to clone a repo, edit under workspace/repos/, then open a PR with
+  github_create_fix_pr (branch must be cost-fix/<slug>).
+- DevRev issues: load devrev-issue and call devrev_create_issue(title, body) to file a finding;
+  part, team, space, tag and stage are fixed by the tool.
 - Limits, to state whenever they affect a conclusion: CUR covers 2026-10-01 to 2026-10-10 and
   the last day is partial, so the newest settled day is 2026-10-08. There is no earlier
   month, so baselines are at most 7 days. Metrics are daily, so a cost jump can be timed to
@@ -146,8 +196,9 @@ Decide first, then follow only that type's steps.
    and over $5/day against the baseline, increases only, settled days only. If nothing
    passes, answer "No anomaly", say what you checked, and stop. If confirmed: find which
    cost line moved, whether volume or cost per unit moved, and the hour it started. Then
-   check metrics for a traffic change on that day, then commits and merged PRs in the owning
-   service shortly before the jump.
+   check metrics for a traffic change on that day, then load marina-deployments and list marina
+   image.tag deploys for the owning service in that env shortly before the jump (then app-repo
+   commits at the new tag if needed).
 
 Use at most about 50 tool calls. If you need more, report what you have and say what is
 left.
@@ -192,6 +243,7 @@ _athena = boto3.client("athena", region_name=ATHENA_REGION)
 _secrets = boto3.client("secretsmanager", region_name=AWS_REGION)
 _github_pat_cache: str | None = None
 _grafana_key_cache: str | None = None
+_devrev_pat_cache: str | None = None
 
 
 def _skills_plugin() -> AgentSkills:
@@ -239,6 +291,36 @@ def _github_pat() -> str:
     return token
 
 
+def _devrev_pat() -> str:
+    """Fetch the DevRev PAT from Secrets Manager (cached for the process)."""
+    global _devrev_pat_cache
+    if _devrev_pat_cache:
+        return _devrev_pat_cache
+    resp = _secrets.get_secret_value(SecretId=DEVREV_PAT_SECRET_ARN)
+    raw = resp.get("SecretString") or ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        token = (
+            payload.get(DEVREV_PAT_SECRET_JSON_KEY)
+            or payload.get("pat")
+            or payload.get("token")
+            or payload.get("api_key_value")
+        )
+        if not token:
+            raise RuntimeError(
+                f"secret {DEVREV_PAT_SECRET_ARN!r} JSON missing key {DEVREV_PAT_SECRET_JSON_KEY!r}"
+            )
+    else:
+        token = raw.strip()
+    if not token:
+        raise RuntimeError(f"empty DevRev PAT in secret {DEVREV_PAT_SECRET_ARN!r}")
+    _devrev_pat_cache = token
+    return token
+
+
 def _grafana_key() -> str:
     """Return the x-litellm-api-key header value for the Grafana MCP gateway (cached for the process)."""
     global _grafana_key_cache
@@ -276,26 +358,47 @@ def _grafana_mcp() -> MCPClient | None:
     )
 
 
-def _github_request(path: str, params: dict | None = None, accept: str = "application/vnd.github+json") -> dict | list:
+def _github_request(
+    path: str,
+    params: dict | None = None,
+    accept: str = "application/vnd.github+json",
+    method: str = "GET",
+    body: dict | None = None,
+) -> dict | list:
     token = _github_pat()
-    query = f"?{urllib.parse.urlencode(params)}" if params else ""
+    query = f"?{urllib.parse.urlencode(params)}" if params and method == "GET" else ""
     url = f"{GITHUB_API}{path}{query}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": accept,
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "cost-investigator-agent",
-        },
-    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": accept,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "cost-investigator-agent",
+    }
+    data: bytes | None = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode()
-            return json.loads(body) if body else {}
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         detail = e.read().decode()[:500]
         raise RuntimeError(f"GitHub API {e.code} for {path}: {detail}") from e
+
+
+def _github_open_pull_request(
+    owner: str, repo: str, title: str, body: str, head: str, base: str
+) -> dict:
+    result = _github_request(
+        f"/repos/{owner}/{repo}/pulls",
+        method="POST",
+        body={"title": title, "body": body, "head": head, "base": base},
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("unexpected GitHub response creating pull request")
+    return result
 
 
 @tool
@@ -458,6 +561,50 @@ def github_search_commits(query: str, owner: str = "", per_page: int = 10) -> st
 
 
 @tool
+def github_list_commits(
+    owner: str,
+    repo: str,
+    path: str,
+    since: str = "",
+    until: str = "",
+    per_page: int = 30,
+) -> str:
+    """List commits on a repository path, newest first (marina deploy history).
+
+    Use for devrev/marina paths like codex/dev/values.yaml around a cost spike window.
+    Pair with github_get_file(ref=sha) to detect image.tag changes between commits.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name (e.g. marina).
+        path: File path in the repo.
+        since: ISO 8601 timestamp; only commits after this time (optional).
+        until: ISO 8601 timestamp; only commits before this time (optional).
+        per_page: Max commits to return (1-100).
+    """
+    params: dict[str, str | int] = {
+        "path": path,
+        "per_page": max(1, min(per_page, 100)),
+    }
+    if since:
+        params["since"] = since
+    if until:
+        params["until"] = until
+    data = _github_request(f"/repos/{owner}/{repo}/commits", params)
+    items = []
+    for hit in data if isinstance(data, list) else []:
+        commit = hit.get("commit", {})
+        items.append({
+            "sha": hit.get("sha"),
+            "message": (commit.get("message") or "").split("\n", 1)[0],
+            "author": (commit.get("author") or {}).get("name"),
+            "date": (commit.get("author") or {}).get("date"),
+            "url": hit.get("html_url"),
+        })
+    return json.dumps(items, indent=2)
+
+
+@tool
 def github_list_pull_requests(owner: str, repo: str, state: str = "closed", per_page: int = 10) -> str:
     """List recent pull requests for a repository (merged/closed by default).
 
@@ -486,6 +633,108 @@ def github_list_pull_requests(owner: str, repo: str, state: str = "closed", per_
         "url": pr.get("html_url"),
     } for pr in data]
     return json.dumps(items, indent=2)
+
+
+@tool
+def github_clone_repo(owner: str, repo: str, base_branch: str = "main") -> str:
+    """Clone or refresh a devrev GitHub repo into the session workspace for code fixes.
+
+    Files appear under workspace/repos/<owner>/<repo>/. Edit them with read_workspace_file and
+    write_workspace_file using that prefix. Load github-fix-pr before use.
+
+    Args:
+        owner: Repository owner (must be GITHUB_DEFAULT_OWNER / devrev).
+        repo: Repository name.
+        base_branch: Branch to clone (default main).
+    """
+    try:
+        result = clone_repository(
+            WORKSPACE,
+            owner,
+            repo,
+            base_branch,
+            _github_pat(),
+            GITHUB_DEFAULT_OWNER,
+        )
+    except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result, indent=2)
+
+
+@tool
+def github_create_fix_pr(
+    owner: str,
+    repo: str,
+    branch: str,
+    title: str,
+    body: str,
+    commit_message: str,
+    base_branch: str = "main",
+    paths: str = "",
+) -> str:
+    """Commit changes in the workspace clone, push branch, and open a pull request.
+
+    Load github-fix-pr first. Branch must be cost-fix/<slug>. Stage all changes or only paths
+    (comma-separated, repo-relative).
+
+    Args:
+        owner: Repository owner (devrev).
+        repo: Repository name.
+        branch: New branch name, e.g. cost-fix/sqs-getqueueurl-wisp.
+        title: PR title.
+        body: PR description (include cost evidence and query IDs).
+        commit_message: Single git commit message.
+        base_branch: Target branch for the PR (default main).
+        paths: Optional comma-separated paths under the clone to stage.
+    """
+    path_list = [p.strip() for p in paths.split(",") if p.strip()] or None
+    try:
+        result = create_fix_pull_request(
+            WORKSPACE,
+            owner,
+            repo,
+            branch,
+            base_branch,
+            title,
+            body,
+            commit_message,
+            _github_pat(),
+            GITHUB_DEFAULT_OWNER,
+            path_list,
+            lambda o, r, t, b, h, base: _github_open_pull_request(o, r, t, b, h, base),
+        )
+    except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result, indent=2)
+
+
+@tool
+def devrev_create_issue(title: str, body: str) -> str:
+    """Create a DevRev issue for a cost finding (fixed part, team, space, tag, stage).
+
+    Load the devrev-issue skill first. Only title and body are sent; routing fields are
+    configured on the runtime. Returns display_id and url on success.
+
+    Args:
+        title: Short issue title.
+        body: Markdown description with evidence, query IDs, and recommended fix.
+    """
+    try:
+        result = devrev_create_work(
+            title,
+            body,
+            _devrev_pat(),
+            api_base=DEVREV_API_BASE,
+            applies_to_part=DEVREV_ISSUE_APPLIES_TO_PART,
+            owned_by=DEVREV_ISSUE_OWNED_BY,
+            space=DEVREV_ISSUE_SPACE,
+            tag_id=DEVREV_ISSUE_TAG_ID,
+            stage_id=DEVREV_ISSUE_STAGE_ID,
+            priority=DEVREV_ISSUE_PRIORITY,
+        )
+    except (ValueError, RuntimeError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result, indent=2)
 
 
 def _check_sql(sql: str) -> str:
@@ -583,7 +832,11 @@ TOOLS = [
     github_search_code,
     github_get_file,
     github_search_commits,
+    github_list_commits,
     github_list_pull_requests,
+    github_clone_repo,
+    github_create_fix_pr,
+    devrev_create_issue,
 ]
 
 

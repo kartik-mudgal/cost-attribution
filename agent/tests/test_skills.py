@@ -53,6 +53,38 @@ class TestSkills(unittest.TestCase):
         self.assertIn("cloudwatch-metrics", athena)
         self.assertIn("cloudwatch_metrics", athena)
 
+    def test_marina_deployments_skill_bundled_and_wired(self):
+        skill = SKILLS / "marina-deployments" / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        self.assertEqual(skill_name(skill), "marina-deployments")
+        source = AGENT_PY.read_text()
+        self.assertIn("marina-deployments", source)
+        self.assertIn("github_list_commits", source)
+        self.assertIn("marina-deployments", skill.read_text())
+        self.assertIn("github_list_commits", skill.read_text())
+        self.assertIn("/repos/{owner}/{repo}/commits", source)
+
+    def test_github_fix_pr_skill_bundled_and_wired(self):
+        skill = SKILLS / "github-fix-pr" / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        self.assertEqual(skill_name(skill), "github-fix-pr")
+        source = AGENT_PY.read_text()
+        self.assertIn("github-fix-pr", source)
+        self.assertIn("github_clone_repo", source)
+        self.assertIn("github_create_fix_pr", source)
+        package = (AGENT_DIR.parent / "deploy" / "package.sh").read_text()
+        self.assertIn("github_fix.py", package)
+
+    def test_devrev_issue_skill_bundled_and_wired(self):
+        skill = SKILLS / "devrev-issue" / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        self.assertEqual(skill_name(skill), "devrev-issue")
+        source = AGENT_PY.read_text()
+        self.assertIn("devrev-issue", source)
+        self.assertIn("devrev_create_issue", source)
+        package = (AGENT_DIR.parent / "deploy" / "package.sh").read_text()
+        self.assertIn("devrev_issues.py", package)
+
     def test_select_examples_filter_billing_period(self):
         for skill in sorted(SKILLS.glob("*/SKILL.md")):
             for block in re.findall(r"```sql\n(.*?)```", skill.read_text(), re.S):

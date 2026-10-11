@@ -210,6 +210,8 @@ class TestWiring(unittest.TestCase):
     def test_package_bundles_artifacts_module(self):
         source = (REPO_ROOT / "deploy" / "package.sh").read_text()
         self.assertIn('"$ROOT/agent/artifacts.py"', source)
+        self.assertIn('"$ROOT/agent/github_fix.py"', source)
+        self.assertIn('"$ROOT/agent/devrev_issues.py"', source)
 
 
 if __name__ == "__main__":

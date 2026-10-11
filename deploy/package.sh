@@ -9,7 +9,8 @@ KEY="${KEY:-cost-agent/agent-$(date +%Y%m%d%H%M%S).zip}"
 rm -rf "$BUILD" && mkdir -p "$BUILD/pkg"
 uv pip install -q --target "$BUILD/pkg" --python-platform aarch64-manylinux2014 \
   --python-version 3.12 --only-binary=:all: -r "$ROOT/agent/requirements.txt"
-cp "$ROOT/agent/agent.py" "$ROOT/agent/artifacts.py" "$BUILD/pkg/"
+cp "$ROOT/agent/agent.py" "$ROOT/agent/artifacts.py" "$ROOT/agent/github_fix.py" \
+  "$ROOT/agent/devrev_issues.py" "$BUILD/pkg/"
 # Strands AgentSkills loads SKILL.md packages from this directory at runtime.
 if [[ -d "$ROOT/agent/skills" ]]; then
   cp -R "$ROOT/agent/skills" "$BUILD/pkg/skills"

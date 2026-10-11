@@ -1,0 +1,34 @@
+"""Unit tests for github_fix helpers (no agent import)."""
+
+import unittest
+
+from github_fix import (
+    BRANCH_PATTERN,
+    clone_relative_path,
+    validate_branch,
+    validate_owner_repo,
+)
+
+
+class TestGithubFixValidation(unittest.TestCase):
+    def test_clone_path(self):
+        self.assertEqual(clone_relative_path("devrev", "wisp"), "repos/devrev/wisp")
+
+    def test_branch_pattern(self):
+        self.assertTrue(BRANCH_PATTERN.match("cost-fix/sqs-url-cache"))
+        self.assertFalse(BRANCH_PATTERN.match("main"))
+        self.assertFalse(BRANCH_PATTERN.match("cost-fix/"))
+
+    def test_validate_branch(self):
+        validate_branch("cost-fix/ok-slug")
+        with self.assertRaises(ValueError):
+            validate_branch("feature/foo")
+
+    def test_validate_owner_repo(self):
+        validate_owner_repo("devrev", "marina", "devrev")
+        with self.assertRaises(ValueError):
+            validate_owner_repo("other", "marina", "devrev")
+
+
+if __name__ == "__main__":
+    unittest.main()
