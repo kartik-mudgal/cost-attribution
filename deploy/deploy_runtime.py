@@ -29,9 +29,13 @@ spec = dict(
     environmentVariables={
         "WORKSPACE_DIR": "/mnt/workspace",
         "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        # AgentCore Identity API-key credential provider name (PAT stored in token vault).
-        "GITHUB_PAT_PROVIDER": "github-pat",
         "GITHUB_DEFAULT_OWNER": "devrev",
+        # Secrets Manager ARN for the GitHub PAT (JSON key api_key_value).
+        "GITHUB_PAT_SECRET_ARN": (
+            "arn:aws:secretsmanager:us-west-2:270149200236:secret:"
+            "bedrock-agentcore-identity!default/apikey/github-pat-50ea78aa-npH3Wy"
+        ),
+        "GITHUB_PAT_SECRET_JSON_KEY": "api_key_value",
         "ATHENA_REGION": REGION,
         "ATHENA_DATABASE": "hackathon_cur",
         "ATHENA_TABLE": "cost_report",

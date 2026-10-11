@@ -4,9 +4,9 @@ Payload: {"prompt": "..."} or {"case": {...}}. Session storage is mounted at
 WORKSPACE so files written in one invocation are visible in later invocations
 of the same session.
 
-GitHub access uses the AgentCore Identity API-key credential provider
-``github-pat`` (created via create-api-key-credential-provider). Tools fetch
-the PAT at call time with @requires_api_key; the token never lives in env vars.
+GitHub access reads a PAT from AWS Secrets Manager (JSON key api_key_value).
+Default secret is the AgentCore-managed github-pat vault entry; override with
+GITHUB_PAT_SECRET_ARN. The token is never logged or returned to the model.
 
 CUR data is queried through Athena (athena_query). The cur-athena, cur-sqs and
 cur-dynamodb skills describe the table and how to query it per service.
@@ -22,15 +22,19 @@ import urllib.request
 from pathlib import Path
 
 import boto3
-from bedrock_agentcore.identity.auth import requires_api_key
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent, AgentSkills, tool
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-GITHUB_PAT_PROVIDER = os.environ.get("GITHUB_PAT_PROVIDER", "github-pat")
 GITHUB_DEFAULT_OWNER = os.environ.get("GITHUB_DEFAULT_OWNER", "devrev")
 GITHUB_API = "https://api.github.com"
+# AgentCore Identity stores the PAT under this managed secret (JSON: api_key_value).
+GITHUB_PAT_SECRET_ARN = os.environ.get(
+    "GITHUB_PAT_SECRET_ARN",
+    "arn:aws:secretsmanager:us-west-2:270149200236:secret:bedrock-agentcore-identity!default/apikey/github-pat-50ea78aa-npH3Wy",
+)
+GITHUB_PAT_SECRET_JSON_KEY = os.environ.get("GITHUB_PAT_SECRET_JSON_KEY", "api_key_value")
 # Bundled with the runtime zip next to agent.py; override with SKILLS_DIR.
 SKILLS_DIR = Path(os.environ.get("SKILLS_DIR", str(Path(__file__).resolve().parent / "skills")))
 ATHENA_REGION = os.environ.get("ATHENA_REGION", "us-west-2")
@@ -49,12 +53,14 @@ Before writing any query, load the cur-athena skill, then the skill for the serv
 in scope: cur-sqs or cur-dynamodb. Analyse one service at a time.
 
 Skills are available via the skills tool — load github-code-lookup when you
-need GitHub access. That skill uses AgentCore Identity provider ``github-pat``
-to fetch a token for ``devrev`` org repos; never print or request the token.
+need GitHub access. GitHub tools load a PAT from Secrets Manager for ``devrev``
+org repos; never print or request the token.
 
 Answer with: cause, evidence, fix, estimated monthly saving, confidence."""
 
 _athena = boto3.client("athena", region_name=ATHENA_REGION)
+_secrets = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+_github_pat_cache: str | None = None
 
 
 def _skills_plugin() -> AgentSkills:
@@ -77,10 +83,29 @@ def _safe_path(name: str) -> Path:
     return path
 
 
-@requires_api_key(provider_name=GITHUB_PAT_PROVIDER)
-def _github_pat(*, api_key: str) -> str:
-    """Fetch the GitHub PAT from AgentCore Identity (provider: github-pat)."""
-    return api_key
+def _github_pat() -> str:
+    """Fetch the GitHub PAT from Secrets Manager (cached for the process)."""
+    global _github_pat_cache
+    if _github_pat_cache:
+        return _github_pat_cache
+    resp = _secrets.get_secret_value(SecretId=GITHUB_PAT_SECRET_ARN)
+    raw = resp.get("SecretString") or ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        token = payload.get(GITHUB_PAT_SECRET_JSON_KEY) or payload.get("api_key") or payload.get("token")
+        if not token:
+            raise RuntimeError(
+                f"secret {GITHUB_PAT_SECRET_ARN!r} JSON missing key {GITHUB_PAT_SECRET_JSON_KEY!r}"
+            )
+    else:
+        token = raw.strip()
+    if not token:
+        raise RuntimeError(f"empty GitHub PAT in secret {GITHUB_PAT_SECRET_ARN!r}")
+    _github_pat_cache = token
+    return token
 
 
 def _github_request(path: str, params: dict | None = None, accept: str = "application/vnd.github+json") -> dict | list:

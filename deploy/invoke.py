@@ -1,8 +1,4 @@
-"""Invoke the deployed runtime. Usage: python invoke.py "<prompt>" [session-id] [user-id]
-
-runtimeUserId is required for AgentCore Identity (@requires_api_key / github-pat).
-Without it the runtime does not mint a workload access token and GitHub tools fail.
-"""
+"""Invoke the deployed runtime. Usage: python invoke.py "<prompt>" [session-id] [user-id]"""
 import json
 import os
 import pathlib
