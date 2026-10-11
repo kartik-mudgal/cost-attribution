@@ -79,6 +79,24 @@ uv run --with boto3 python deploy/deploy_runtime.py
 `package.sh` uses the `BUCKET` and `KEY` environment variables if they are set, so you can upload
 somewhere else without editing the script.
 
+### CI deploy (merge to main)
+
+`.github/workflows/deploy.yml` runs `package.sh` then `deploy_runtime.py` on pushes to `main`
+that touch `agent/` or `deploy/` (and on manual `workflow_dispatch`).
+
+Add these repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` | Access key for an IAM user/role that can deploy (see below) |
+| `AWS_SECRET_ACCESS_KEY` | Matching secret key |
+
+The AWS principal behind those keys needs permission to:
+
+- `s3:PutObject` (and usually `s3:GetObject`) on `s3://cost-agent-artifacts-270149200236/*`
+- AgentCore control: create/update/get/list agent runtimes in `us-west-2`
+- `iam:PassRole` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
+
 ## Invoke
 
 ```bash
