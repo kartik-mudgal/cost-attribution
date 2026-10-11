@@ -58,12 +58,42 @@ fi
 
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 ASSETS_BUCKET="cost-agent-ui-assets-${REGION}-${ACCOUNT}"
+SECRET_NAME="${SECRET_NAME:-cost-agent-ui/api-secret}"
+
+ensure_api_secret() {
+  # Prefer explicit env (e.g. GitHub Actions secret COST_AGENT_API_SECRET).
+  if [[ -n "${COST_AGENT_API_SECRET:-}" ]]; then
+    echo "$COST_AGENT_API_SECRET"
+    return
+  fi
+  if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region "$REGION" >/dev/null 2>&1; then
+    aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --region "$REGION" \
+      --query SecretString --output text
+    return
+  fi
+  local generated
+  generated="$(openssl rand -hex 32)"
+  aws secretsmanager create-secret \
+    --name "$SECRET_NAME" \
+    --description "Shared secret for cost-agent-ui proxy (X-Cost-Agent-Secret)" \
+    --secret-string "$generated" \
+    --region "$REGION" >/dev/null
+  echo "Created Secrets Manager secret ${SECRET_NAME}" >&2
+  echo "$generated"
+}
+
+API_SECRET="$(ensure_api_secret)"
+if [[ -z "$API_SECRET" || "$API_SECRET" == "None" ]]; then
+  echo "Failed to resolve COST_AGENT_API_SECRET" >&2
+  exit 1
+fi
 
 echo "Region:          $REGION"
 echo "Stack:           $STACK_NAME"
 echo "Runtime ARN:     $AGENT_RUNTIME_ARN"
 echo "Allowed CIDR:    $ALLOWED_CIDR"
 echo "Assets bucket:   $ASSETS_BUCKET"
+echo "API secret:      Secrets Manager ${SECRET_NAME} (or COST_AGENT_API_SECRET env)"
 
 echo "→ Building proxy Lambda zip"
 (cd "$UI/deploy/proxy" && npm install --omit=dev --silent)
@@ -139,23 +169,50 @@ FRONTEND_URL="${CF_FrontendUrl:?missing FrontendUrl}"
 HTTP_URL="${CF_HttpApiUrl:?missing HttpApiUrl}"
 WS_URL="${CF_WebSocketUrl:?missing WebSocketUrl}"
 
-echo "→ Ensuring Lambda AGENT_RUNTIME_ARN"
-aws lambda update-function-configuration \
+echo "→ Updating Lambda code + env (force code publish; CF ignores same S3 key)"
+aws lambda update-function-code \
   --function-name "$LAMBDA_NAME" \
   --region "$REGION" \
-  --environment "Variables={AGENT_RUNTIME_ARN=${AGENT_RUNTIME_ARN},REGION=${REGION},AGENTCORE_ACTOR_ID=cost-investigator}" \
+  --s3-bucket "$ASSETS_BUCKET" \
+  --s3-key proxy.zip \
   >/dev/null
 aws lambda wait function-updated --function-name "$LAMBDA_NAME" --region "$REGION"
 
-echo "→ Uploading frontend with API endpoints injected"
+# Use a file so the secret is not visible in process listings via argv.
+ENV_FILE="$(mktemp)"
+python3 - "$ENV_FILE" "$AGENT_RUNTIME_ARN" "$REGION" "$API_SECRET" <<'PY'
+import json, sys
+path, arn, region, secret = sys.argv[1:5]
+json.dump(
+    {
+        "Variables": {
+            "AGENT_RUNTIME_ARN": arn,
+            "REGION": region,
+            "AGENTCORE_ACTOR_ID": "cost-investigator",
+            "COST_AGENT_API_SECRET": secret,
+        }
+    },
+    open(path, "w"),
+)
+PY
+aws lambda update-function-configuration \
+  --function-name "$LAMBDA_NAME" \
+  --region "$REGION" \
+  --environment "file://${ENV_FILE}" \
+  >/dev/null
+rm -f "$ENV_FILE"
+aws lambda wait function-updated --function-name "$LAMBDA_NAME" --region "$REGION"
+
+echo "→ Uploading frontend with API endpoints + secret injected"
 TMP="$(mktemp)"
-python3 - "$UI/frontend/index.html" "$TMP" "$HTTP_URL" "$WS_URL" <<'PY'
+python3 - "$UI/frontend/index.html" "$TMP" "$HTTP_URL" "$WS_URL" "$API_SECRET" <<'PY'
 import pathlib, sys
-src, dst, http_url, ws_url = sys.argv[1:5]
+src, dst, http_url, ws_url, api_secret = sys.argv[1:6]
 html = pathlib.Path(src).read_text()
 inject = f"""<script>
 window.__API_BASE = {http_url!r};
 window.__WS_URL = {ws_url!r};
+window.__API_SECRET = {api_secret!r};
 </script>
 """
 html = html.replace("<head>", "<head>\n" + inject, 1)
@@ -169,11 +226,12 @@ aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/index.
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
-    echo "## Cost investigator UI"
+    echo "## DevRev AWS Cost Investigator UI"
     echo "- Frontend: ${FRONTEND_URL}"
     echo "- HTTP API: ${HTTP_URL}"
     echo "- WebSocket: ${WS_URL}"
     echo "- Allowed CIDR: \`${ALLOWED_CIDR}\`"
+    echo "- Auth: header \`X-Cost-Agent-Secret\` (secret in Secrets Manager \`${SECRET_NAME}\`)"
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
@@ -184,7 +242,14 @@ Deployed.
   HTTP API:  ${HTTP_URL}
   WebSocket: ${WS_URL}
   CIDR:      ${ALLOWED_CIDR}
+  Auth:      X-Cost-Agent-Secret (value in Secrets Manager: ${SECRET_NAME})
 
-Open the Frontend URL (allow a minute if CloudFront is new). Use SSE or WebSocket.
-Share sessions with ?sessionId=… (≥33 chars).
+Workflow / curl example:
+  aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --query SecretString --output text
+  curl -X POST '${HTTP_URL}/invocations' \\
+    -H 'Content-Type: application/json' \\
+    -H "X-Cost-Agent-Secret: \$SECRET" \\
+    -d '{"prompt":"hi","session_id":"session-workflow-xxxxxxxxxxxxxxxxx"}'
+
+Note: the browser UI embeds the secret at deploy time (basic gate, not user auth).
 EOF
