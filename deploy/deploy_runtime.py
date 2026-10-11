@@ -32,6 +32,10 @@ spec = dict(
         # AgentCore Identity API-key credential provider name (PAT stored in token vault).
         "GITHUB_PAT_PROVIDER": "github-pat",
         "GITHUB_DEFAULT_OWNER": "devrev",
+        "ATHENA_REGION": REGION,
+        "ATHENA_DATABASE": "hackathon_cur",
+        "ATHENA_TABLE": "cost_report",
+        "ATHENA_WORKGROUP": "cost-agent",
     },
     lifecycleConfiguration={"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
 )

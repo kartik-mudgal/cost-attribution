@@ -63,6 +63,30 @@ aws iam put-role-policy --role-name cost-agent-runtime-role \
   --policy-document file://deploy/role-policy.json
 ```
 
+### Athena workgroup for CUR queries
+
+The agent queries the CUR table `hackathon_cur.cost_report` (Glue catalog, `us-west-2`) through a
+dedicated `cost-agent` workgroup. The workgroup uses Athena managed query results, so there is no
+results bucket and the runtime role needs no S3 permissions for results. It also caps each query
+at 1 GB scanned.
+
+```bash
+aws athena create-work-group --name cost-agent --region us-west-2 \
+  --configuration '{
+    "ManagedQueryResultsConfiguration": {"Enabled": true},
+    "EnforceWorkGroupConfiguration": true,
+    "BytesScannedCutoffPerQuery": 1073741824,
+    "PublishCloudWatchMetricsEnabled": true
+  }'
+```
+
+`ManagedQueryResultsConfiguration` needs a recent AWS CLI. If yours rejects it, upgrade the CLI or
+turn on managed query results for the workgroup in the Athena console.
+
+The runtime role's Athena, Glue and CUR bucket permissions are in `deploy/role-policy.json`
+(statements `AthenaQuery`, `CurCatalog`, `CurDataList`, `CurDataRead`). After changing that file,
+apply it with the `aws iam put-role-policy` command above.
+
 ## Build and deploy
 
 ```bash
@@ -103,6 +127,9 @@ The AWS principal behind those keys needs permission to:
 ```bash
 uv run --with boto3 python deploy/invoke.py "List the workspace and say what is there."
 
+# Name one service per request (sqs or dynamodb):
+uv run --with boto3 python deploy/invoke.py "Which SQS queues changed most in cost over the last week, and why?"
+
 # Reuse a session to keep the same workspace (the ID must be at least 33 characters):
 uv run --with boto3 python deploy/invoke.py "Continue from your notes." session-<id-from-previous-call>
 ```
@@ -132,6 +159,20 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | `GITHUB_PAT_PROVIDER` | `github-pat` | AgentCore Identity API-key credential provider name |
 | `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
 | `SKILLS_DIR` | `<alongside agent.py>/skills` | Bundled Strands skills directory |
+| `ATHENA_REGION` | `us-west-2` | Region of the Athena workgroup and Glue catalog |
+| `ATHENA_DATABASE` | `hackathon_cur` | Glue database holding the CUR table |
+| `ATHENA_TABLE` | `cost_report` | CUR 2.0 table, partitioned by `billing_period` |
+| `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a per-query scan limit |
+| `ATHENA_TIMEOUT_S` | `120` | Seconds before `athena_query` stops a query |
+
+## Athena query tool
+
+`athena_query(sql, max_rows=200)` in `agent/agent.py` runs one read-only statement and returns the
+rows as JSON with the query ID and MB scanned. It accepts only `SELECT`, `WITH`, `DESCRIBE` and
+`SHOW`, requires `SELECT`/`WITH` queries to filter on `billing_period`, and returns at most 500 rows
+(200 by default), with a note telling the agent to aggregate further when results are cut off.
+
+Restricting a query to one service (SQS or DynamoDB) is left to the skills, not the tool.
 
 ## Agent skills
 
@@ -147,6 +188,12 @@ Bundled today:
 | Skill | When to use |
 | --- | --- |
 | `github-code-lookup` | Fetch GitHub PAT via Identity and access `devrev` org repos |
+| `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
+| `cur-sqs` | SQS analysis: billed operations, waste checks (URL lookups, batching, empty receives), example queries |
+| `cur-dynamodb` | DynamoDB analysis: on-demand vs provisioned, storage and PITR, Streams, item-size signals, example queries |
+
+Only SQS and DynamoDB are covered. To add a service, create `agent/skills/cur-<service>/SKILL.md`
+and add its product code to the scope table in `cur-athena`.
 
 Add a new skill by creating `agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
 `description`) and markdown instructions, then redeploy.
@@ -166,6 +213,7 @@ fetch the PAT with `@requires_api_key(provider_name="github-pat")`.
 
 ## Status
 
-Workspace tools, GitHub code tools (via `github-pat`), and skills are in place. Cost tools are still
-to be added in `agent/agent.py`: `get_resource_cost` (CUR data via DuckDB), `get_cloudwatch` and
-`describe_resource`.
+Workspace tools, GitHub code tools (via `github-pat`), the `athena_query` tool and the CUR skills
+are in place. Still to add in `agent/agent.py`: `get_cloudwatch` and `describe_resource`. Until
+then the skills tell the agent which CloudWatch metric would confirm a finding and to lower its
+confidence.

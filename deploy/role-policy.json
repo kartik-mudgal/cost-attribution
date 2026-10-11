@@ -82,6 +82,45 @@
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue"],
       "Resource": "arn:aws:secretsmanager:us-west-2:270149200236:secret:bedrock-agentcore-identity!default/apikey/github-pat-*"
+    },
+    {
+      "Sid": "AthenaQuery",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:StopQueryExecution",
+        "athena:GetWorkGroup"
+      ],
+      "Resource": "arn:aws:athena:us-west-2:270149200236:workgroup/cost-agent"
+    },
+    {
+      "Sid": "CurCatalog",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "glue:GetPartition",
+        "glue:GetPartitions"
+      ],
+      "Resource": [
+        "arn:aws:glue:us-west-2:270149200236:catalog",
+        "arn:aws:glue:us-west-2:270149200236:database/hackathon_cur",
+        "arn:aws:glue:us-west-2:270149200236:table/hackathon_cur/*"
+      ]
+    },
+    {
+      "Sid": "CurDataList",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": "arn:aws:s3:::cur-report-270149200236-us-west-2-an"
+    },
+    {
+      "Sid": "CurDataRead",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::cur-report-270149200236-us-west-2-an/devrev-dev-us-east-1-cost-report/*"
     }
   ]
 }
