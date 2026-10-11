@@ -79,12 +79,6 @@
       "Resource": "arn:aws:secretsmanager:us-west-2:270149200236:secret:bedrock-agentcore-identity!default/apikey/github-pat-*"
     },
     {
-      "Sid": "DevrevPatSecret",
-      "Effect": "Allow",
-      "Action": ["secretsmanager:GetSecretValue"],
-      "Resource": "arn:aws:secretsmanager:us-west-2:270149200236:secret:cost-agent-devrev-pat-*"
-    },
-    {
       "Sid": "GrafanaMcpSecret",
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue"],

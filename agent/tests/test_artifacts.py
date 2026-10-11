@@ -211,7 +211,6 @@ class TestWiring(unittest.TestCase):
         source = (REPO_ROOT / "deploy" / "package.sh").read_text()
         self.assertIn('"$ROOT/agent/artifacts.py"', source)
         self.assertIn('"$ROOT/agent/github_fix.py"', source)
-        self.assertIn('"$ROOT/agent/devrev_issues.py"', source)
 
 
 if __name__ == "__main__":

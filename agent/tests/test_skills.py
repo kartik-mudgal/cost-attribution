@@ -75,16 +75,6 @@ class TestSkills(unittest.TestCase):
         package = (AGENT_DIR.parent / "deploy" / "package.sh").read_text()
         self.assertIn("github_fix.py", package)
 
-    def test_devrev_issue_skill_bundled_and_wired(self):
-        skill = SKILLS / "devrev-issue" / "SKILL.md"
-        self.assertTrue(skill.is_file())
-        self.assertEqual(skill_name(skill), "devrev-issue")
-        source = AGENT_PY.read_text()
-        self.assertIn("devrev-issue", source)
-        self.assertIn("devrev_create_issue", source)
-        package = (AGENT_DIR.parent / "deploy" / "package.sh").read_text()
-        self.assertIn("devrev_issues.py", package)
-
     def test_select_examples_filter_billing_period(self):
         for skill in sorted(SKILLS.glob("*/SKILL.md")):
             for block in re.findall(r"```sql\n(.*?)```", skill.read_text(), re.S):
