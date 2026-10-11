@@ -86,7 +86,25 @@ function wrapPlainJson(text) {
   ];
 }
 
-async function invokeAgent({ prompt, sessionId, actorId }, onEvent) {
+function webhookUrlFrom(body) {
+  const raw = body.webhook_url || body.webhookUrl || "";
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function validateWebhookUrl(url) {
+  if (!url) return "webhook_url is required when async=true";
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return "webhook_url must be an absolute http(s) URL";
+    }
+  } catch (_) {
+    return "webhook_url must be an absolute http(s) URL";
+  }
+  return null;
+}
+
+async function invokeAgent({ prompt, sessionId, actorId, asyncMode, webhookUrl }, onEvent) {
   if (!AGENT_RUNTIME_ARN || AGENT_RUNTIME_ARN === "NONE") {
     await onEvent({
       type: "RUN_ERROR",
@@ -95,14 +113,20 @@ async function invokeAgent({ prompt, sessionId, actorId }, onEvent) {
     return;
   }
 
+  const payload = { prompt, actor_id: actorId, session_id: sessionId };
+  if (asyncMode) {
+    payload.async = true;
+    payload.webhook_url = webhookUrl;
+  } else if (webhookUrl) {
+    payload.webhook_url = webhookUrl;
+  }
+
   const cmd = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: AGENT_RUNTIME_ARN,
     qualifier: "DEFAULT",
     runtimeSessionId: sessionId,
     runtimeUserId: actorId,
-    payload: new TextEncoder().encode(
-      JSON.stringify({ prompt, actor_id: actorId, session_id: sessionId })
-    ),
+    payload: new TextEncoder().encode(JSON.stringify(payload)),
   });
 
   const resp = await agentClient.send(cmd);
@@ -294,9 +318,25 @@ async function handleHTTP(event) {
   }
 
   const sessionId = sessionIdFrom(body);
+  const actorId = actorIdFrom(body);
+  // Workflows: {"async": true, "webhook_url": "https://..."} → accept quickly;
+  // agent POSTs the full report body to webhook_url when ready.
+  const wantAsync = body.async === true || body.wait === false;
+  const webhookUrl = webhookUrlFrom(body);
+  if (wantAsync) {
+    const webhookErr = validateWebhookUrl(webhookUrl);
+    if (webhookErr) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+        body: JSON.stringify({ error: webhookErr }),
+      };
+    }
+  }
   // Workflows: {"stream": false} or {"response_format": "json"} → single JSON body.
   // Chat UI keeps default SSE (stream omitted / true).
   const wantJson =
+    wantAsync ||
     body.stream === false ||
     body.response_format === "json" ||
     String(headerGet(event.headers || {}, "accept")).includes("application/json");
@@ -306,7 +346,13 @@ async function handleHTTP(event) {
   let runError = null;
   try {
     await invokeAgent(
-      { prompt, sessionId, actorId: actorIdFrom(body) },
+      {
+        prompt,
+        sessionId,
+        actorId,
+        asyncMode: wantAsync,
+        webhookUrl: webhookUrl || undefined,
+      },
       async (agEvent) => {
         if (wantJson) {
           if (agEvent?.type === "TEXT_MESSAGE_CONTENT" && agEvent.delta) {
@@ -330,6 +376,28 @@ async function handleHTTP(event) {
         })}\n\n`
       );
     }
+  }
+
+  if (wantAsync) {
+    return {
+      statusCode: runError ? 502 : 202,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Thread-Id": sessionId,
+        ...CORS_HEADERS,
+      },
+      body: JSON.stringify({
+        accepted: !runError,
+        status_code: runError ? 502 : 202,
+        session_id: sessionId,
+        webhook_url: webhookUrl,
+        message: runError
+          ? null
+          : "Investigation started. Report body will POST to webhook_url when ready.",
+        markdown: textParts.join(""),
+        error: runError,
+      }),
+    };
   }
 
   if (wantJson) {

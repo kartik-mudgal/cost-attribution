@@ -32,7 +32,13 @@ With github-fix-pr, the agent may clone devrev repos under workspace/repos/ and 
 via github_clone_repo and github_create_fix_pr (git must be on the runtime PATH).
 
 DevRev issues use devrev_create_issue with a PAT from Secrets Manager (DEVREV_PAT_SECRET_ARN).
+
+Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
+immediately; the investigation continues in a background thread (AgentCore async
+task). When finished the agent calls notify_report_ready, which POSTs the full
+report body to the caller-provided webhook_url.
 """
+import asyncio
 import base64
 import contextvars
 import json
@@ -40,6 +46,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -141,7 +148,13 @@ ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", DEFAULT_BUCKET)
 ARTIFACT_PREFIX = os.environ.get("ARTIFACT_PREFIX", DEFAULT_PREFIX)
 ARTIFACT_URL_TTL_S = int(os.environ.get("ARTIFACT_URL_TTL_S", str(DEFAULT_URL_TTL_S)))
 _s3 = boto3.client("s3", region_name=AWS_REGION)
-_artifact_session: contextvars.ContextVar[str] = contextvars.ContextVar("artifact_session", default="unknown-session")
+_artifact_session: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "artifact_session", default="unknown-session"
+)
+# Set per-invocation from payload.webhook_url (required for async runs).
+_report_webhook_url: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "report_webhook_url", default=""
+)
 
 SYSTEM_PROMPT = f"""You analyse AWS cost for DevRev's dev account (020040093233) and recommend fixes. Services
 covered: SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda,
@@ -233,13 +246,19 @@ append_workspace_file, one section per call, using the answer's sections: verdic
 checked, then each finding, then not an issue, then totals. Cite query ids and figures in
 evidence. Do not paste raw query rows into the file, and do not put the whole report in one
 call. After the last section, call publish_artifact once. Include each download_url in the
-answer and say that it expires after expires_in_seconds. Never invent a download URL."""
+answer and say that it expires after expires_in_seconds. Never invent a download URL.
+
+When the report is finished (especially for async / workflow runs), call
+notify_report_ready once with the entire report markdown as body — the full file
+contents, not a summary or truncated excerpt. That POSTs the complete body to the
+webhook_url supplied on the invoke request."""
 
 _CONTINUE_REPORT = (
     "The previous response hit the output limit and was cut off. Continue the same report. "
     "Call append_workspace_file once per remaining section (verdict and scope checked, each "
     "finding, not an issue, totals). Do not repeat sections already in the file. "
-    "Do not paste raw query rows. When the file is complete, call publish_artifact once."
+    "Do not paste raw query rows. When the file is complete, call publish_artifact once, "
+    "then notify_report_ready with the entire report markdown as body."
 )
 
 _athena = boto3.client("athena", region_name=ATHENA_REGION)
@@ -475,6 +494,65 @@ def publish_artifact(name: str) -> str:
     except (ValueError, FileNotFoundError, OSError) as e:
         return json.dumps({"error": str(e)})
     return json.dumps(result)
+
+
+@tool
+def notify_report_ready(body: str) -> str:
+    """POST the full report to the invoke webhook_url when the report is ready.
+
+    Call once after publish_artifact. Pass the entire report content as body
+    (full markdown file contents). That string is the HTTP request body.
+
+    Args:
+        body: Complete report text to deliver (not a summary).
+    """
+    webhook_url = _report_webhook_url.get().strip()
+    if not webhook_url:
+        return json.dumps(
+            {
+                "error": "webhook_url was not provided on the invoke request "
+                "(required when async=true)",
+            }
+        )
+    if not isinstance(body, str) or not body.strip():
+        return json.dumps({"error": "body must be a non-empty string"})
+
+    data = body.encode("utf-8")
+    content_type = "text/plain; charset=utf-8"
+    try:
+        json.loads(body)
+        content_type = "application/json"
+    except json.JSONDecodeError:
+        pass
+
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": content_type,
+            "Content-Length": str(len(data)),
+            "X-Session-Id": _artifact_session.get(),
+            "User-Agent": "cost-investigator-agent",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            resp_body = resp.read().decode("utf-8", errors="replace")[:2000]
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": getattr(resp, "status", 200),
+                    "bytes": len(data),
+                    "webhook_url": webhook_url,
+                    "response": resp_body,
+                }
+            )
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:500]
+        return json.dumps({"ok": False, "status": e.code, "error": detail})
+    except urllib.error.URLError as e:
+        return json.dumps({"ok": False, "error": str(e.reason if hasattr(e, "reason") else e)})
 
 
 @tool
@@ -831,6 +909,7 @@ TOOLS = [
     write_workspace_file,
     append_workspace_file,
     publish_artifact,
+    notify_report_ready,
     athena_query,
     github_search_code,
     github_get_file,
@@ -926,6 +1005,25 @@ def _bind_artifact_session(session_id: str) -> None:
     _artifact_session.set(safe_session_id(session_id))
 
 
+def _webhook_url_from_payload(payload: dict) -> str:
+    raw = payload.get("webhook_url") or payload.get("webhookUrl") or ""
+    return str(raw).strip() if raw else ""
+
+
+def _validate_webhook_url(url: str) -> str | None:
+    """Return an error message if url is missing/invalid; else None."""
+    if not url:
+        return "webhook_url is required when async=true"
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "webhook_url must be an absolute http(s) URL"
+    return None
+
+
+def _bind_report_webhook(url: str) -> None:
+    _report_webhook_url.set(url.strip())
+
+
 def _text_events(text: str) -> list[dict]:
     message_id = str(uuid.uuid4())
     return [
@@ -961,6 +1059,76 @@ def _build_agent(session_manager: AgentCoreMemorySessionManager | None = None) -
     return Agent(**kwargs)
 
 
+def _want_async(payload: dict) -> bool:
+    """True when the client asked not to wait for the full investigation."""
+    if payload.get("async") is True:
+        return True
+    if payload.get("wait") is False:
+        return True
+    return False
+
+
+async def _run_investigation_silent(
+    prompt: str, session_id: str, actor_id: str, webhook_url: str
+) -> None:
+    """Run the agent to completion without streaming (background / async jobs)."""
+    _bind_artifact_session(session_id)
+    _bind_report_webhook(webhook_url)
+    session_manager = _memory_session_manager(session_id, actor_id)
+    agent = _build_agent(session_manager=session_manager)
+    current_prompt = prompt
+    report_continuations = 0
+    try:
+        while True:
+            try:
+                async for _event in agent.stream_async(current_prompt):
+                    pass
+                break
+            except MaxTokensReachedException:
+                report_continuations += 1
+                if report_continuations > 3:
+                    raise
+                current_prompt = _CONTINUE_REPORT
+    finally:
+        if session_manager is not None:
+            session_manager.close()
+        agent.cleanup()
+
+
+def _start_async_investigation(
+    prompt: str, session_id: str, actor_id: str, webhook_url: str
+) -> str:
+    """Kick off investigation in a background thread; keep the runtime session busy."""
+    task_id = app.add_async_task(
+        "cost_report",
+        {"session_id": session_id, "actor_id": actor_id},
+    )
+
+    def worker() -> None:
+        try:
+            asyncio.run(
+                _run_investigation_silent(prompt, session_id, actor_id, webhook_url)
+            )
+        except Exception:
+            logger.exception(
+                "async investigation failed session_id=%s task_id=%s",
+                session_id,
+                task_id,
+            )
+        finally:
+            try:
+                app.complete_async_task(task_id)
+            except Exception:
+                logger.exception("complete_async_task failed task_id=%s", task_id)
+
+    threading.Thread(
+        target=worker,
+        name=f"cost-report-{safe_session_id(session_id)}",
+        daemon=True,
+    ).start()
+    return str(task_id)
+
+
 @app.entrypoint
 async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     """Stream AG-UI events for the cost investigator run."""
@@ -968,7 +1136,47 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     session_id = _session_id(payload, context)
     actor_id = _actor_id(payload)
     run_id = str(uuid.uuid4())
+    webhook_url = _webhook_url_from_payload(payload)
     _bind_artifact_session(session_id)
+    _bind_report_webhook(webhook_url)
+
+    if _want_async(payload):
+        webhook_err = _validate_webhook_url(webhook_url)
+        if webhook_err:
+            yield _agui_event("RUN_STARTED", runId=run_id)
+            yield _agui_event(
+                "RUN_ERROR",
+                runId=run_id,
+                error={"code": "INVALID_INPUT", "message": webhook_err},
+            )
+            return
+        task_id = _start_async_investigation(
+            prompt, session_id, actor_id, webhook_url
+        )
+        yield _agui_event("RUN_STARTED", runId=run_id)
+        yield _agui_event(
+            "STATE_SNAPSHOT",
+            snapshot={
+                "status": "accepted",
+                "async": True,
+                "task_id": task_id,
+                "session_id": session_id,
+                "actor_id": actor_id,
+                "webhook_url": webhook_url,
+            },
+        )
+        for event in _text_events(
+            "Accepted. Investigation is running in the background; "
+            "the full report body will POST to webhook_url when ready."
+        ):
+            yield event
+        yield _agui_event(
+            "STATE_DELTA",
+            delta={"status": "busy", "async": True, "task_id": task_id},
+        )
+        yield _agui_event("RUN_FINISHED", runId=run_id)
+        return
+
     session_manager = _memory_session_manager(session_id, actor_id)
     agent = _build_agent(session_manager=session_manager)
 
