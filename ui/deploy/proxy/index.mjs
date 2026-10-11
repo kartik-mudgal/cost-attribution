@@ -9,6 +9,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from "@aws-sdk/client-apigatewaymanagementapi";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { randomUUID } from "crypto";
 
 const AGENT_RUNTIME_ARN = process.env.AGENT_RUNTIME_ARN;
@@ -16,8 +17,10 @@ const REGION = process.env.REGION || "us-west-2";
 const DEFAULT_ACTOR = process.env.AGENTCORE_ACTOR_ID || "cost-investigator";
 // Shared secret for HTTP header X-Cost-Agent-Secret (or Bearer / body.api_secret).
 const REQUIRED_SECRET = (process.env.COST_AGENT_API_SECRET || "").trim();
+const FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME || "";
 
 const agentClient = new BedrockAgentCoreClient({ region: REGION });
+const lambdaClient = new LambdaClient({ region: REGION });
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -332,11 +335,41 @@ async function handleHTTP(event) {
         body: JSON.stringify({ error: webhookErr }),
       };
     }
+    // HTTP API integration timeout is hard-capped at 30s; AgentCore cold start
+    // often exceeds that. Return 202 now and finish InvokeAgentRuntime in a
+    // background self-invoke (Lambda timeout, not API GW).
+    let enqueueError = null;
+    try {
+      await enqueueAsyncWorker({ prompt, sessionId, actorId, webhookUrl });
+    } catch (err) {
+      enqueueError = {
+        code: "ASYNC_ENQUEUE_ERROR",
+        message: err.message || String(err),
+      };
+    }
+    return {
+      statusCode: enqueueError ? 502 : 202,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Thread-Id": sessionId,
+        ...CORS_HEADERS,
+      },
+      body: JSON.stringify({
+        accepted: !enqueueError,
+        status_code: enqueueError ? 502 : 202,
+        session_id: sessionId,
+        webhook_url: webhookUrl,
+        message: enqueueError
+          ? null
+          : "Investigation started. Agent will call post_async_webhook with the full body.",
+        markdown: "",
+        error: enqueueError,
+      }),
+    };
   }
   // Workflows: {"stream": false} or {"response_format": "json"} → single JSON body.
   // Chat UI keeps default SSE (stream omitted / true).
   const wantJson =
-    wantAsync ||
     body.stream === false ||
     body.response_format === "json" ||
     String(headerGet(event.headers || {}, "accept")).includes("application/json");
@@ -350,7 +383,7 @@ async function handleHTTP(event) {
         prompt,
         sessionId,
         actorId,
-        asyncMode: wantAsync,
+        asyncMode: false,
         webhookUrl: webhookUrl || undefined,
       },
       async (agEvent) => {
@@ -376,28 +409,6 @@ async function handleHTTP(event) {
         })}\n\n`
       );
     }
-  }
-
-  if (wantAsync) {
-    return {
-      statusCode: runError ? 502 : 202,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Thread-Id": sessionId,
-        ...CORS_HEADERS,
-      },
-      body: JSON.stringify({
-        accepted: !runError,
-        status_code: runError ? 502 : 202,
-        session_id: sessionId,
-        webhook_url: webhookUrl,
-        message: runError
-          ? null
-          : "Investigation started. Agent will call post_async_webhook with the full body.",
-        markdown: textParts.join(""),
-        error: runError,
-      }),
-    };
   }
 
   if (wantJson) {
@@ -431,7 +442,68 @@ async function handleHTTP(event) {
   };
 }
 
+async function enqueueAsyncWorker({ prompt, sessionId, actorId, webhookUrl }) {
+  if (!FUNCTION_NAME) {
+    throw new Error("AWS_LAMBDA_FUNCTION_NAME is not set");
+  }
+  await lambdaClient.send(
+    new InvokeCommand({
+      FunctionName: FUNCTION_NAME,
+      InvocationType: "Event",
+      Payload: Buffer.from(
+        JSON.stringify({
+          __async_worker: true,
+          prompt,
+          session_id: sessionId,
+          actor_id: actorId,
+          webhook_url: webhookUrl,
+        })
+      ),
+    })
+  );
+}
+
+async function handleAsyncWorker(event) {
+  const prompt = event.prompt || "";
+  const sessionId = sessionIdFrom(event);
+  const actorId = actorIdFrom(event);
+  const webhookUrl = webhookUrlFrom(event);
+  console.log(
+    JSON.stringify({
+      msg: "async_worker_start",
+      session_id: sessionId,
+      actor_id: actorId,
+    })
+  );
+  try {
+    await invokeAgent(
+      {
+        prompt,
+        sessionId,
+        actorId,
+        asyncMode: true,
+        webhookUrl,
+      },
+      async () => {}
+    );
+    console.log(JSON.stringify({ msg: "async_worker_ok", session_id: sessionId }));
+    return { statusCode: 200, body: "ok" };
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        msg: "async_worker_error",
+        session_id: sessionId,
+        error: err.message || String(err),
+      })
+    );
+    throw err;
+  }
+}
+
 export const handler = async (event) => {
+  if (event?.__async_worker) {
+    return handleAsyncWorker(event);
+  }
   if (event.requestContext?.eventType) {
     return handleWebSocket(event);
   }

@@ -77,9 +77,10 @@ JSON mode (`"stream": false` or `"response_format": "json"`) returns:
 
 ### Workflow: async invoke + webhook
 
-Pass `"async": true` and a `webhook_url`. AgentCore accepts quickly and runs in the
-background with an async-only system prompt and the `post_async_webhook` tool, which
-POSTs JSON `{"session_id":"...","body":"<full report md>"}` to that URL
+Pass `"async": true` and a `webhook_url`. The proxy returns **202 immediately** (HTTP
+API is hard-capped at 30s) and self-invokes to start AgentCore. The runtime runs with
+an async-only system prompt and the `post_async_webhook` tool, which POSTs JSON
+`{"session_id":"...","body":"<full report md>"}` to that URL
 (`Content-Type: application/json`, plus `X-Session-Id`). Sync/chat invokes do not
 register that tool.
 
