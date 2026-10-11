@@ -1,0 +1,262 @@
+<title>CUR for Cost Attribution</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: single reading column like an engineering design note; tables and code scroll in their own boxes. */
+:root{
+  --bg:#f6f8f9; --surface:#ffffff; --fg:#17212b; --muted:#566573; --line:#d7dee4;
+  --accent:#1f6f8b; --accent-soft:#e3f0f5; --warn:#a2580a; --warn-soft:#fbf0e2; --good:#2c7a4b;
+  --sans:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#11171c; --surface:#182129; --fg:#e4eaef; --muted:#9aa8b4; --line:#2c3944;
+  --accent:#6cb8d4; --accent-soft:#1c3340; --warn:#e5a35a; --warn-soft:#33281a; --good:#6fc493; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#11171c; --surface:#182129; --fg:#e4eaef; --muted:#9aa8b4; --line:#2c3944;
+  --accent:#6cb8d4; --accent-soft:#1c3340; --warn:#e5a35a; --warn-soft:#33281a; --good:#6fc493; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans);padding-inline:16px;padding-block:40px 64px}
+main{max-width:46rem;margin:0 auto;display:flex;flex-direction:column;gap:44px}
+header{display:flex;flex-direction:column;gap:10px}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+h1{font-size:2rem;line-height:1.2;margin:0;text-wrap:balance}
+h2{font-size:1.35rem;margin:0;text-wrap:balance}
+h3{font-size:1.02rem;margin:0}
+p{margin:0}
+section{display:flex;flex-direction:column;gap:14px}
+.lede{color:var(--muted);font-size:1.05rem}
+code,.mono{font-family:var(--mono);font-size:.86em}
+code{background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+ul,ol{margin:0;padding-left:1.25rem;display:flex;flex-direction:column;gap:6px}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.92rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 11.5px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td code{background:none;padding:0;white-space:nowrap}
+.verdict{border-left:3px solid var(--accent);background:var(--surface);padding:14px 16px;border-radius:0 8px 8px 0;display:flex;flex-direction:column;gap:6px}
+.verdict strong{color:var(--accent)}
+.note{border-left:3px solid var(--warn);background:var(--warn-soft);padding:12px 16px;border-radius:0 8px 8px 0}
+pre.code{margin:0;overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;font:13px/1.55 var(--mono)}
+.tier{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px}
+.tier > div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.tag{font:500 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.ex td:last-child{color:var(--muted)}
+.diagram{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px}
+footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:16px}
+a{color:var(--accent)}
+</style>
+
+<main>
+<header>
+  <span class="eyebrow">Cost attribution · Hackathon notes · DynamoDB + SQS</span>
+  <h1>CUR for cost attribution</h1>
+  <p class="lede">What the Cost and Usage Report gives us, which columns matter for per-resource cost, where CloudWatch fills the gaps, and how much of the analysis to hand to an agent.</p>
+</header>
+
+<section>
+  <h2>What CUR is</h2>
+  <p>The Cost and Usage Report is AWS's line-item billing data. AWS writes it as Parquet (CUR 2.0) or gzipped CSV (legacy) into an S3 bucket we own and refreshes it up to about three times a day. Each row is one resource × usage type × operation × time window, with the usage quantity and its cost. Summed over a month, it matches the invoice.</p>
+  <ul>
+    <li><strong>Partitioned by billing month</strong> (<code>BILLING_PERIOD=2026-10/</code>). Each refresh overwrites that month's files, so always read the whole month folder.</li>
+    <li><strong>Time granularity</strong> is the window each row covers. Pick hourly: it sums to daily, and it lets us line a cost change up with a deploy.</li>
+    <li><strong>Recent data is provisional.</strong> The last 24–48 hours fill in late, and credits, tax and refunds land after month close. Treat D-2 as the newest settled day and recompute the last 3–5 days each run.</li>
+    <li><strong>Covers only the account that creates it.</strong> A dev-account export sees only dev (020040093233). Prod later needs an export from the management account.</li>
+  </ul>
+  <div class="verdict">
+    <strong>Export settings</strong>
+    <p>Standard data export · CUR 2.0 · <strong>Include resource IDs: on</strong> · Hourly · All columns · Parquet · Overwrite. One export for all services; filter to DynamoDB and SQS at query time so reconciliation still sees the full bill.</p>
+  </div>
+  <p class="mono" style="color:var(--muted)">Already available for history: Umang's legacy CUR at s3://umang-bucket-test/monthly/TestReportLambda-Umang-Daily/ (daily, resource IDs on, Sep + Oct).</p>
+</section>
+
+<section>
+  <h2>Columns that matter for per-resource cost</h2>
+  <p>Select every column when creating the export; these are the ones the analysis reads. Names are CUR 2.0; legacy CUR uses <code>lineItem/ResourceId</code> style.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Column</th><th>Role</th><th>Example from dev</th></tr></thead>
+    <tbody class="ex">
+      <tr><td><code>line_item_resource_id</code></td><td>The resource. Join key to Terraform / Marina.</td><td><code>arn:aws:dynamodb:…:table/timeline</code></td></tr>
+      <tr><td><code>line_item_product_code</code></td><td>Service filter</td><td><code>AmazonDynamoDB</code>, <code>AWSQueueService</code></td></tr>
+      <tr><td><code>line_item_usage_type</code></td><td>What kind of usage was billed</td><td><code>WriteRequestUnits</code>, <code>Requests-RBP</code>, <code>TimedStorage-ByteHrs</code></td></tr>
+      <tr><td><code>line_item_operation</code></td><td>Which API call or mode caused it</td><td><code>Receive</code>, <code>GetQueueUrl</code>, <code>PayPerRequestThroughput</code></td></tr>
+      <tr><td><code>line_item_usage_start_date</code></td><td>Start of the row's time window</td><td><code>2026-10-08 14:00</code></td></tr>
+      <tr><td><code>line_item_usage_amount</code> + <code>pricing_unit</code></td><td>Billed quantity and unit</td><td>39.5M <code>Requests</code></td></tr>
+      <tr><td><code>line_item_unblended_cost</code></td><td>Cost for dev analysis</td><td>$15.81</td></tr>
+      <tr><td><code>line_item_net_unblended_cost</code></td><td>Cost after discounts (prod reconciliation)</td><td>—</td></tr>
+      <tr><td><code>line_item_line_item_type</code></td><td><code>Usage</code> for analysis; include all types to reconcile to the invoice</td><td><code>Usage</code>, <code>Credit</code>, <code>Tax</code></td></tr>
+      <tr><td><code>resource_tags</code></td><td>Ownership, first pass</td><td><code>user_part=hubble</code>, <code>user_terraform_workspace=…</code></td></tr>
+      <tr><td><code>product_region_code</code>, <code>line_item_usage_account_id</code></td><td>Region and account</td><td><code>us-east-1</code></td></tr>
+    </tbody>
+  </table></div>
+  <h3>How usage types map to cost drivers</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Service</th><th>Usage type (operation)</th><th>Driven by</th></tr></thead>
+    <tbody>
+      <tr><td>DynamoDB</td><td><code>Write/ReadRequestUnits</code> (PayPerRequestThroughput)</td><td>Request count × item size, rounded up per 1 KB write / 4 KB read</td></tr>
+      <tr><td>DynamoDB</td><td><code>Write/ReadCapacityUnit-Hrs</code> (CommittedThroughput)</td><td>Provisioned capacity, used or not</td></tr>
+      <tr><td>DynamoDB</td><td><code>TimedStorage-ByteHrs</code>, <code>TimedPITRStorage-ByteHrs</code></td><td>Table size, PITR on</td></tr>
+      <tr><td>DynamoDB</td><td><code>Streams-Requests</code> (GetRecords)</td><td>Stream consumers. <strong>No resource ID</strong>: allocate or mark unattributed</td></tr>
+      <tr><td>SQS</td><td><code>Requests-RBP</code> / <code>-FIFO-RBP</code> / <code>-Fair-RBP</code> by operation</td><td>Every API call, including empty receives; each 64 KB chunk counts as one request</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Do we also need CloudWatch?</h2>
+  <div class="verdict">
+    <strong>Yes, but only to explain changes.</strong>
+    <p>CUR answers <em>how much</em> and <em>which billing line</em>. It cannot say <em>why</em>, because it only knows billed units, not what the application did. CloudWatch supplies the denominators.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Question</th><th>CUR alone</th><th>Needs</th></tr></thead>
+    <tbody>
+      <tr><td>Which table / queue costs most?</td><td>Yes</td><td>—</td></tr>
+      <tr><td>Which API call is the cost? (Receive vs GetQueueUrl)</td><td>Yes, from <code>operation</code></td><td>—</td></tr>
+      <tr><td>Is this queue short-polling?</td><td>No</td><td><code>NumberOfEmptyReceives</code>, <code>NumberOfMessagesReceived</code>, attribute <code>ReceiveMessageWaitTimeSeconds</code></td></tr>
+      <tr><td>Did item size grow? (same requests, more RCU/WCU)</td><td>No, it sees units only</td><td><code>ConsumedWrite/ReadCapacityUnits</code> ÷ <code>SuccessfulRequestLatency</code> SampleCount per operation; <code>TableSizeBytes</code> ÷ <code>ItemCount</code></td></tr>
+      <tr><td>Is provisioned capacity wasted?</td><td>Partly (hours billed)</td><td><code>ProvisionedWriteCapacityUnits</code> vs consumed</td></tr>
+      <tr><td>Did messages get bigger?</td><td>No</td><td><code>SentMessageSize</code></td></tr>
+      <tr><td>Which GSI is expensive?</td><td>No, rolled into the table ARN</td><td>Consumed capacity with <code>GlobalSecondaryIndexName</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>Fetch CloudWatch only for resources CUR has flagged, not for all 12,754 queues. One <code>GetMetricData</code> call returns up to 500 metrics, so the bill stays small.</p>
+</section>
+
+<section id="metrics">
+  <h2>Metrics that explain a cost increase</h2>
+  <p>Every request-priced cost line splits into a volume part and a per-unit part. Find which part moved first, then use the metrics below to name the cause.</p>
+  <pre class="code">cost = requests × billed units per request × price
+       └ volume ┘   └──── efficiency ────┘
+
+volume up, efficiency flat   → more traffic (expected, or a retry storm / new caller)
+volume flat, efficiency up   → bigger items, GSIs, scans, empty receives: the waste case</pre>
+
+  <h3>DynamoDB</h3>
+  <p>Namespace <code>AWS/DynamoDB</code>, dimension <code>TableName</code> (add <code>GlobalSecondaryIndexName</code> for indexes, <code>Operation</code> for per-API counts).</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Metric or source</th><th>Stat</th><th>Explains</th></tr></thead>
+    <tbody>
+      <tr><td><code>ConsumedWriteCapacityUnits</code>, <code>ConsumedReadCapacityUnits</code></td><td>Sum</td><td>Billed units. Matches CUR <code>Write/ReadRequestUnits</code> on on-demand tables</td></tr>
+      <tr><td><code>SuccessfulRequestLatency</code> per <code>Operation</code></td><td>SampleCount</td><td>Request count by API (PutItem, UpdateItem, Query, Scan, BatchWriteItem…). The volume side</td></tr>
+      <tr><td><code>ReturnedItemCount</code> per <code>Operation</code> (Query, Scan)</td><td>Sum</td><td>Items read per call. Big Scans or unbounded Queries</td></tr>
+      <tr><td>Consumed units with <code>GlobalSecondaryIndexName</code></td><td>Sum</td><td>Index cost. Each GSI write is billed on top of the base write</td></tr>
+      <tr><td><code>ConditionalCheckFailedRequests</code></td><td>Sum</td><td>Failed conditional writes still consume WCU</td></tr>
+      <tr><td><code>TransactionConflict</code></td><td>Sum</td><td>Retried transactions; transactional writes cost 2×</td></tr>
+      <tr><td><code>ProvisionedWrite/ReadCapacityUnits</code></td><td>Average</td><td>Provisioned tables: capacity paid for vs consumed</td></tr>
+      <tr><td><code>Write/ReadThrottleEvents</code></td><td>Sum</td><td>Under-provisioning; throttled calls trigger client retries</td></tr>
+      <tr><td><code>SuccessfulRequestLatency</code>, Operation <code>GetRecords</code>, dimension <code>StreamLabel</code></td><td>SampleCount</td><td>Stream reads per table. Use it to allocate the Streams cost CUR leaves without a resource ID</td></tr>
+      <tr><td><code>DescribeTable</code>: <code>TableSizeBytes</code>, <code>ItemCount</code>, <code>BillingModeSummary</code>, <code>TableClassSummary</code>, GSI list</td><td>API</td><td>Storage cost and average item size. Refreshed about every 6 hours</td></tr>
+      <tr><td><code>DescribeContinuousBackups</code>, <code>DescribeTimeToLive</code></td><td>API</td><td>Whether PITR is on (bills on table size) and whether TTL is cleaning up old items</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Derived signal</th><th>Formula</th><th>If it rises</th></tr></thead>
+    <tbody>
+      <tr><td>Write units per write request</td><td>ConsumedWCU ÷ write-op SampleCount</td><td>Items got bigger across a 1 KB step, or a new GSI was added</td></tr>
+      <tr><td>Read units per read request</td><td>ConsumedRCU ÷ read-op SampleCount</td><td>Bigger items (4 KB steps), more Scans, or a switch to strongly consistent reads (2× eventual)</td></tr>
+      <tr><td>Average item size</td><td>TableSizeBytes ÷ ItemCount</td><td>Confirms the item-size cause without reading any data</td></tr>
+      <tr><td>GSI write amplification</td><td>Σ GSI WCU ÷ base table WCU</td><td>Indexes cost more than the table; check for unused GSIs or projecting all attributes</td></tr>
+      <tr><td>Scan share of reads</td><td>Scan RCU ÷ total RCU</td><td>A job or endpoint started scanning; a Query or GSI would be cheaper</td></tr>
+      <tr><td>Wasted writes</td><td>ConditionalCheckFailed ÷ write requests</td><td>Retry loops or write races</td></tr>
+      <tr><td>Provisioned utilization</td><td>Consumed ÷ provisioned</td><td>Below ~30% steady: lower it or switch to on-demand. Spiky: on-demand fits better</td></tr>
+      <tr><td>Storage per item and PITR share</td><td>PITR cost ÷ storage cost</td><td>PITR on a large dev table; TTL not deleting expired items</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">BatchWriteItem and BatchGetItem count one sample per call, not per item, so "units per request" overstates item size on batch-heavy tables. Cross-check with average item size. On <code>wisp-indexer-vector-cache</code>, the 4.2 KB average confirms about 5 WRU per item.</div>
+
+  <h3>SQS</h3>
+  <p>Namespace <code>AWS/SQS</code>, dimension <code>QueueName</code>. CloudWatch counts messages but not API calls. CUR counts API calls per operation (<code>line_item_usage_amount</code>), so most ratios join the two.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Metric or source</th><th>Stat</th><th>Explains</th></tr></thead>
+    <tbody>
+      <tr><td>CUR usage amount per <code>operation</code> (Send, SendMessageBatch, Receive, DeleteMessage(Batch), ChgVis, GetQueueUrl, GetQueueAttributes)</td><td>Sum</td><td>Billed request count by API. The volume side</td></tr>
+      <tr><td><code>NumberOfMessagesSent</code></td><td>Sum</td><td>Real message volume from producers</td></tr>
+      <tr><td><code>NumberOfMessagesReceived</code></td><td>Sum</td><td>Deliveries to consumers, counting redeliveries</td></tr>
+      <tr><td><code>NumberOfMessagesDeleted</code></td><td>Sum</td><td>Messages processed successfully</td></tr>
+      <tr><td><code>NumberOfEmptyReceives</code></td><td>Sum</td><td>Receive calls that returned nothing. Pure overhead</td></tr>
+      <tr><td><code>SentMessageSize</code></td><td>Average, Maximum</td><td>Payloads over 64 KB bill as multiple requests</td></tr>
+      <tr><td><code>ApproximateNumberOfMessagesVisible</code>, <code>ApproximateAgeOfOldestMessage</code></td><td>Average, Max</td><td>Backlog; separates "consumers too slow" from "too many consumers"</td></tr>
+      <tr><td><code>GetQueueAttributes</code>: <code>ReceiveMessageWaitTimeSeconds</code>, <code>VisibilityTimeout</code>, <code>RedrivePolicy</code>, <code>KmsDataKeyReusePeriodSeconds</code></td><td>API</td><td>Polling mode, redelivery window, DLQ limit, KMS call rate</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Derived signal</th><th>Formula</th><th>If it rises</th></tr></thead>
+    <tbody>
+      <tr><td>Empty-receive ratio</td><td>NumberOfEmptyReceives ÷ CUR Receive requests</td><td>Short polling or too many idle consumers. Fix: <code>WaitTimeSeconds=20</code>, fewer pollers</td></tr>
+      <tr><td>Messages per receive</td><td>NumberOfMessagesReceived ÷ non-empty Receive requests</td><td>Close to 1: set <code>MaxNumberOfMessages=10</code></td></tr>
+      <tr><td>Send batching</td><td>NumberOfMessagesSent ÷ (Send + SendMessageBatch requests)</td><td>Close to 1: producers aren't batching</td></tr>
+      <tr><td>Delete batching</td><td>NumberOfMessagesDeleted ÷ (DeleteMessage + DeleteMessageBatch requests)</td><td>Close to 1: deletes aren't batched</td></tr>
+      <tr><td>Redelivery rate</td><td>NumberOfMessagesReceived ÷ NumberOfMessagesDeleted</td><td>Above 1: visibility timeout too short, or consumers failing and retrying</td></tr>
+      <tr><td>URL lookups per send</td><td>CUR GetQueueUrl ÷ CUR Send requests</td><td>Close to 1: client looks up the URL every time instead of caching it</td></tr>
+      <tr><td>Attribute polling</td><td>CUR GetQueueAttributes requests per hour</td><td>Autoscalers or health checks polling queue depth too often</td></tr>
+      <tr><td>Idle long-poll consumers</td><td>Empty receives per minute ÷ 3</td><td>With 20 s long polling, each idle poller makes about 3 empty receives a minute, so this estimates idle consumer count</td></tr>
+      <tr><td>Request chunks per message</td><td>Sent requests vs messages, alongside SentMessageSize</td><td>Payloads crossed 64 KB; store the body in S3 and send a pointer</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">KMS-encrypted queues also make KMS calls, which are billed under <code>awskms</code>, not SQS. If a queue's KMS cost rises, check <code>KmsDataKeyReusePeriodSeconds</code>; the default is 300 s and it can go up to 24 h.</div>
+</section>
+
+<section>
+  <h2>Where the agent fits</h2>
+  <p>Don't run the agent over raw CUR every day, and don't leave it as a manual step either. Let deterministic code find the candidates, and call the agent only to explain them and write the issue.</p>
+  <div class="tier">
+    <div>
+      <span class="tag">Tier 1 · Code, daily</span>
+      <h3>Detect</h3>
+      <p>Per resource, compare settled day vs same weekday last week and vs the 4-week same-weekday median, for spend and unit cost. Flag when the change is over 30% <em>and</em> over $5/day.</p>
+    </div>
+    <div>
+      <span class="tag">Tier 1 · Code, daily</span>
+      <h3>Waste rules</h3>
+      <p>Fixed checks that need no baseline: GetQueueUrl ≈ Send, empty-receive ratio high, wait time 0, provisioned ≫ consumed, PITR on idle tables.</p>
+    </div>
+    <div>
+      <span class="tag">Tier 2 · Agent, on flags</span>
+      <h3>Explain and file</h3>
+      <p>For each flag, the agent gets the computed numbers plus CloudWatch series and recent deploys, names the likely cause, estimates savings and drafts a DevRev issue for the owner.</p>
+    </div>
+  </div>
+  <h3>Why split it this way</h3>
+  <ul>
+    <li><strong>Numbers stay defensible.</strong> Detection and dollar figures come from code, so they reconcile. The agent only reasons over figures it is given.</li>
+    <li><strong>Cost and noise stay bounded.</strong> Thousands of resources reduce to a handful of flags a day.</li>
+    <li><strong>The agent does what code can't:</strong> connecting a WCU jump to an item-size change and a deploy, and writing a clear issue.</li>
+    <li><strong>Humans approve at first.</strong> In shadow mode the agent drafts issues for the platform team to review; auto-filing comes later.</li>
+  </ul>
+  <h3>Agent tools (all read-only)</h3>
+  <pre class="code">get_resource_cost(resource_id, days)        # from CUR, by usage_type + operation
+get_baseline(resource_id, metric)           # same-weekday median, D-7
+get_cloudwatch(resource_id, metrics, days)  # empty receives, consumed units, sizes
+describe_resource(resource_id)              # queue attributes, table mode / size
+get_owner(resource_id)                      # tags, then Terraform / Marina
+get_deploys(service, window)                # deploy timestamps
+file_devrev_issue(owner, title, evidence)   # only write action, gated</pre>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+  CUR[(CUR Parquet in S3)] --> D[Daily job: roll up + baselines]
+  D --> R{Flagged?}
+  R -- no --> S[(Store daily rows)]
+  R -- yes --> CW[CloudWatch + describe + deploys]
+  CW --> A[Agent: explain + estimate savings]
+  A --> I[DevRev issue to owner]
+  </pre></div>
+</section>
+
+<section>
+  <h2>What this catches in dev today</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Finding</th><th>Signal</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>hubble-parquet-ingest-queue</code> looks up its URL on every send</td><td>GetQueueUrl $15.81 vs Send $15.80 (Oct to date); same pattern on argus, pythagoras, native-logging. ~$54 across queues.</td><td>CUR only</td></tr>
+      <tr><td><code>blubox-external-events</code> short-polls</td><td>Wait time 0 s, ~1.07M empty receives/day, ~1 message per receive</td><td>CUR + CloudWatch</td></tr>
+      <tr><td><code>wisp-indexer-vector-cache</code> writes are ~5 WRU each</td><td>Avg item ~4.2 KB (153 GB / 36.7M items); WCU swung 0.55M→3.86M/day while batch calls stayed ~100–130k/day</td><td>CUR + CloudWatch</td></tr>
+      <tr><td>Half of SQS cost has no owner tag</td><td><code>part</code> tag on 52% of SQS cost, 90% of DynamoDB cost</td><td>CUR</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">These figures come from the usage part of October's legacy CUR (month to date). They are before discounts: this account's EDP and private-rate discounts are separate rows in other part files, so the net cost is somewhat lower. For reconciliation, include all line item types or use <code>line_item_net_unblended_cost</code>.</div>
+</section>
+
+<footer>Dev account 020040093233 · Read-only analysis · October 2026</footer>
+</main>

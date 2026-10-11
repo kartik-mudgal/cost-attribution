@@ -1,0 +1,211 @@
+<title>Cost Attribution Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column; each phase is a band with its flow drawn as boxes and connectors, then notes. */
+:root{
+  --bg:#f6f8f9; --surface:#ffffff; --fg:#17212b; --muted:#566573; --line:#cfd8df;
+  --aws:#b45f06; --aws-soft:#fdf1e3; --agent:#1f6f8b; --agent-soft:#e3f0f5;
+  --devrev:#5a4fb3; --devrev-soft:#eeecfa; --out:#2c7a4b; --out-soft:#e5f4ea; --later:#7a8691;
+  --sans:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#11171c; --surface:#182129; --fg:#e4eaef; --muted:#9aa8b4; --line:#33414c;
+  --aws:#f0a95a; --aws-soft:#33261a; --agent:#6cb8d4; --agent-soft:#1a3240;
+  --devrev:#a79cf0; --devrev-soft:#262243; --out:#6fc493; --out-soft:#1a3125; --later:#8794a0; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#11171c; --surface:#182129; --fg:#e4eaef; --muted:#9aa8b4; --line:#33414c;
+  --aws:#f0a95a; --aws-soft:#33261a; --agent:#6cb8d4; --agent-soft:#1a3240;
+  --devrev:#a79cf0; --devrev-soft:#262243; --out:#6fc493; --out-soft:#1a3125; --later:#8794a0; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15.5px/1.55 var(--sans);padding-inline:16px;padding-block:40px 64px}
+main{max-width:58rem;margin:0 auto;display:flex;flex-direction:column;gap:48px}
+h1{font-size:2rem;line-height:1.2;margin:0;text-wrap:balance}
+h2{font-size:1.3rem;margin:0;text-wrap:balance}
+h3{font-size:1rem;margin:0}
+p{margin:0}
+ul{margin:0;padding-left:1.2rem;display:flex;flex-direction:column;gap:5px}
+code{font-family:var(--mono);font-size:.85em}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--agent)}
+.lede{color:var(--muted);font-size:1.05rem;max-width:42rem}
+header{display:flex;flex-direction:column;gap:10px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:.85rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:12px;height:12px;border-radius:3px;border:2px solid}
+.sw.aws{border-color:var(--aws);background:var(--aws-soft)}
+.sw.agent{border-color:var(--agent);background:var(--agent-soft)}
+.sw.devrev{border-color:var(--devrev);background:var(--devrev-soft)}
+.sw.out{border-color:var(--out);background:var(--out-soft)}
+
+.phase{display:flex;flex-direction:column;gap:18px}
+.phase-head{display:flex;flex-direction:column;gap:6px}
+.stage{font:500 11.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+.canvas{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px}
+.flow{display:flex;flex-direction:column;align-items:stretch;gap:0;min-width:40rem}
+.row{display:flex;gap:14px;align-items:stretch}
+.row > .box{flex:1;min-width:0}
+.box{border:2px solid;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:4px;background:var(--surface)}
+.box b{font-size:.92rem}
+.box small{font-size:.8rem;color:var(--muted);line-height:1.4}
+.box .k{font:500 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.07em}
+.aws{border-color:var(--aws);background:var(--aws-soft)} .aws .k{color:var(--aws)}
+.agent{border-color:var(--agent);background:var(--agent-soft)} .agent .k{color:var(--agent)}
+.devrev{border-color:var(--devrev);background:var(--devrev-soft)} .devrev .k{color:var(--devrev)}
+.out{border-color:var(--out);background:var(--out-soft)} .out .k{color:var(--out)}
+.store{border-style:dashed}
+.arrow{display:flex;justify-content:center;align-items:center;height:28px;color:var(--muted);font:500 12px var(--mono);gap:8px}
+.arrow::before{content:"";width:2px;height:100%;background:var(--line)}
+.arrow span{position:relative;left:-4px}
+.frame{border:2px dashed var(--aws);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:0;position:relative}
+.frame > .tag{position:absolute;top:-10px;left:12px;background:var(--surface);padding:0 6px;font:500 11px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.07em;color:var(--aws)}
+.frame.dr{border-color:var(--devrev)} .frame.dr > .tag{color:var(--devrev)}
+.map{border:1.5px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:0;background:var(--bg)}
+.map > .tag2{font:500 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:10px}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.side{display:flex;gap:14px}
+.side > .box{flex:1}
+
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:12px}
+.note{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 11px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--bg)}
+tr:last-child td{border-bottom:0}
+pre.code{margin:0;overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;font:12.5px/1.55 var(--mono)}
+.divider{height:1px;background:var(--line)}
+footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:16px}
+</style>
+
+<main>
+<header>
+  <span class="eyebrow">Cost attribution · DynamoDB + SQS · Dev account 020040093233</span>
+  <h1>Cost attribution architecture</h1>
+  <p class="lede">Phase 1 finds and explains cost changes per resource from CUR. Phase 2 moves the agent into DevRev so it can read code, map resources to services and find the change that caused the cost. Phase 3 reuses the same data to report what each service costs to run.</p>
+  <div class="legend">
+    <span><i class="sw aws"></i>AWS compute and storage</span>
+    <span><i class="sw agent"></i>Agent (LLM)</span>
+    <span><i class="sw devrev"></i>DevRev</span>
+    <span><i class="sw out"></i>Output</span>
+    <span>Dashed box = data store</span>
+  </div>
+</header>
+
+<!-- PHASE 1 -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="stage">Phase 1 · Hackathon build</span>
+    <h2>Resource-level detection and explanation</h2>
+    <p>Everything runs in AWS. Code computes every number; the agent is called only for flagged resources and explains them using read-only tools.</p>
+  </div>
+  <div class="canvas"><div class="flow">
+    <div class="row">
+      <div class="box aws store"><span class="k">S3</span><b>CUR 2.0 export</b><small>Parquet, hourly rows, resource IDs, refreshed daily</small></div>
+      <div class="box aws store"><span class="k">CloudWatch</span><b>AWS/DynamoDB, AWS/SQS</b><small>Consumed units, request counts, empty receives, sizes</small></div>
+      <div class="box aws"><span class="k">EventBridge Scheduler</span><b>Daily trigger</b><small>After the CUR refresh lands</small></div>
+    </div>
+    <div class="arrow"><span>start execution</span></div>
+    <div class="frame"><span class="tag">Step Functions · cost-analysis-daily</span>
+      <div class="box aws"><span class="k">1 · Lambda (DuckDB)</span><b>Detect</b><small>Per-resource daily cost by usage type + operation → baselines (D-7, 4-week same-weekday median) for spend and unit cost → waste rules → dedupe against open cases → rank by $ → top N → case files to S3</small></div>
+      <div class="arrow"><span>Choice: any flags?</span></div>
+      <div class="map"><span class="tag2">2 · Map over cases · max 3–5 in parallel · retry with backoff · catch → manual review</span>
+        <div class="row">
+          <div class="box agent"><span class="k">Lambda → AgentCore Runtime</span><b>Investigate</b><small>Strands agent on Bedrock. Tools: get_resource_cost, get_cloudwatch, describe_resource. Capped at ~15 tool calls</small></div>
+          <div class="box aws"><span class="k">Lambda</span><b>Validate</b><small>Numbers match the case file, evidence present, saving within bounds</small></div>
+        </div>
+      </div>
+      <div class="arrow"><span>validated findings</span></div>
+      <div class="split">
+        <div class="box out"><span class="k">3a · Lambda</span><b>DevRev issue</b><small>Confirmed finding: cause, evidence, fix, est. monthly saving. One cost queue</small></div>
+        <div class="box out"><span class="k">3b · Lambda</span><b>Slack</b><small>Daily summary, low-confidence findings, cases that failed, links to issues</small></div>
+      </div>
+    </div>
+    <div class="arrow"><span>state</span></div>
+    <div class="row">
+      <div class="box aws store"><span class="k">S3</span><b>Cases and findings</b><small>cases/&lt;date&gt;/&lt;case_id&gt;.json; only keys pass between steps</small></div>
+      <div class="box aws store"><span class="k">DynamoDB</span><b>Case status</b><small>open · filed · fixed · suppressed, keyed by hash(resource, trigger, window)</small></div>
+    </div>
+  </div></div>
+
+  <div class="notes">
+    <div class="note"><h3>Triggers</h3><ul><li>Spend or unit-cost change over 30% and over $5/day vs baseline</li><li>Waste rule with flat cost: GetQueueUrl ≈ Send, empty-receive ratio high, wait time 0, provisioned ≫ consumed</li></ul></div>
+    <div class="note"><h3>Read-only boundary</h3><ul><li>Detect and Investigate roles only read CUR, CloudWatch and describe APIs</li><li>The output Lambda is the only thing that writes outside AWS</li><li>The agent sees computed figures, never table or message contents</li></ul></div>
+    <div class="note"><h3>Unit of analysis</h3><ul><li>One case = one table or queue ARN</li><li>Rows with no resource ID (e.g. DynamoDB Streams) are reported as unattributed so totals still match the bill</li></ul></div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- PHASE 2 -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="stage">Phase 2 · Follow-up</span>
+    <h2>Triage and service-level root cause</h2>
+    <p>The AWS pipeline keeps doing detection. The investigation moves to a DevRev agent that can read code, so it can say which service owns the resource and what change in that service caused the cost.</p>
+  </div>
+  <div class="canvas"><div class="flow">
+    <div class="box aws"><span class="k">From Phase 1</span><b>Case file + resource-level finding</b><small>Pushed to DevRev by the output step instead of being filed directly</small></div>
+    <div class="arrow"><span>webhook / API</span></div>
+    <div class="frame dr"><span class="tag">DevRev · workflow + agent</span>
+      <div class="box devrev"><span class="k">Step A</span><b>Map resource → service</b><small>Search Terraform for the resource definition (workspace, module) and Helm / Marina values for services that reference the queue or table name. Normalize names: ARN vs name vs URL, env suffixes</small></div>
+      <div class="arrow"><span>service + repos</span></div>
+      <div class="box devrev"><span class="k">Step B</span><b>Find what changed in the service</b><small>Commits, merged PRs, Helm values and Terraform changes in the window where cost moved; deploy times. Read the consumer and producer code paths for the resource</small></div>
+      <div class="arrow"><span>candidate change</span></div>
+      <div class="box devrev"><span class="k">Step C</span><b>Explain and triage</b><small>Link the cost change to a specific change ("PR #123 added a GSI", "consumer replaced long polling"), propose the fix, route to the owning team's part, assign severity by $ impact</small></div>
+    </div>
+    <div class="arrow"><span>routed issue</span></div>
+    <div class="split">
+      <div class="box out"><span class="k">DevRev</span><b>Issue in owning team's queue</b><small>Evidence: CUR numbers, metrics, the commit or PR, file and line</small></div>
+      <div class="box out"><span class="k">Human</span><b>Triage and close</b><small>Team accepts, fixes or suppresses; status syncs back to the case table</small></div>
+    </div>
+  </div></div>
+  <div class="notes">
+    <div class="note"><h3>Why DevRev for this part</h3><ul><li>Code, PRs and issues are already connected there, so no separate GitHub token or code index in AWS</li><li>Routing to parts and teams is native</li><li>Shows DevRev's own agent platform on a real problem</li></ul></div>
+    <div class="note"><h3>Boundary stays the same</h3><ul><li>Only the case file and finding cross into DevRev: computed numbers and resource names</li><li>Raw CUR and CloudWatch data stay in AWS</li></ul></div>
+    <div class="note"><h3>Feedback loop</h3><ul><li>Confirmed resource → service mappings are saved and reused in later runs</li><li>Suppressed findings feed back as rules so the same case isn't raised again</li></ul></div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- PHASE 3 -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="stage">Phase 3 · Next step</span>
+    <h2>Cost of running a service</h2>
+    <p>Once resources map to services, the per-resource data Phase 1 already computes rolls up into a per-service cost, with no new collection.</p>
+  </div>
+  <div class="canvas"><div class="flow">
+    <div class="row">
+      <div class="box aws store"><span class="k">Phase 1</span><b>Per-resource daily cost</b><small>By usage type and operation</small></div>
+      <div class="box devrev store"><span class="k">Phase 2</span><b>Resource → service map</b><small>Built from Terraform and Helm, confirmed in triage</small></div>
+    </div>
+    <div class="arrow"><span>join</span></div>
+    <div class="box aws"><span class="k">Daily roll-up</span><b>Service cost</b><small>Direct: tables and queues owned by the service. Shared: split by a visible rule (e.g. share of requests per service from CloudWatch or tracing), labelled estimated. Remainder: unattributed</small></div>
+    <div class="arrow"><span>outputs</span></div>
+    <div class="row">
+      <div class="box out"><span class="k">Report</span><b>Cost per service per day / month</b><small>Trend, top resources, unit cost (e.g. per 1k requests)</small></div>
+      <div class="box out"><span class="k">Report</span><b>Expected vs actual</b><small>Each service declares an expected monthly cost; breaches raise a case</small></div>
+      <div class="box out"><span class="k">Report</span><b>Weekly team digest</b><small>Numbers from code, summary written by the agent</small></div>
+    </div>
+  </div></div>
+</section>
+
+<div class="divider"></div>
+
+<section class="phase">
+  <div class="phase-head"><h2>Phases at a glance</h2></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Phase</th><th>Question answered</th><th>Runs in</th><th>Agent tools</th><th>Output</th></tr></thead>
+    <tbody>
+      <tr><td>1 · Build</td><td>Which table or queue changed, in which cost line, and why (metrics)</td><td>AWS: Step Functions, Lambda, AgentCore</td><td>CUR, CloudWatch, describe APIs</td><td>DevRev issue in one cost queue, Slack summary</td></tr>
+      <tr><td>2 · Follow-up</td><td>Which service owns it and which change caused it</td><td>DevRev workflow + agent</td><td>Code search, PRs and commits, Terraform, Helm / Marina, deploys</td><td>Issue routed to the owning team with the change linked</td></tr>
+      <tr><td>3 · Next</td><td>What a service costs to run, and whether it's within budget</td><td>AWS roll-up on Phase 1 data + Phase 2 map</td><td>Agent only for digests</td><td>Per-service cost reports and budget breaches</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Draft for the cost attribution hackathon · October 2026</footer>
+</main>
