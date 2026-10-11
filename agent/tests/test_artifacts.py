@@ -184,6 +184,15 @@ class TestWiring(unittest.TestCase):
         self.assertIn("Never invent a download URL.", source)
         self.assertIn("format_download_message", source)
 
+    def test_model_output_budget_covers_a_report(self):
+        source = (AGENT_DIR / "agent.py").read_text()
+        self.assertIn("BedrockModel(", source)
+        self.assertIn("max_tokens=MAX_OUTPUT_TOKENS", source)
+        self.assertIn('os.environ.get("MAX_OUTPUT_TOKENS", "16000")', source)
+        self.assertIn("one short markdown file", source)
+        runtime = (REPO_ROOT / "deploy" / "deploy_runtime.py").read_text()
+        self.assertIn('"MAX_OUTPUT_TOKENS": "16000"', runtime)
+
     def test_role_policy_allows_put_and_get_on_dedicated_bucket(self):
         policy = json.loads((REPO_ROOT / "deploy" / "role-policy.json").read_text())
         statement = next(item for item in policy["Statement"] if item.get("Sid") == "UserArtifacts")

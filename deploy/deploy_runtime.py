@@ -29,6 +29,7 @@ spec = dict(
     environmentVariables={
         "WORKSPACE_DIR": "/mnt/workspace",
         "MODEL_ID": "us.anthropic.claude-sonnet-5",
+        "MAX_OUTPUT_TOKENS": "16000",
         "GITHUB_DEFAULT_OWNER": "devrev",
         # Secrets Manager ARN for the GitHub PAT (JSON key api_key_value).
         "GITHUB_PAT_SECRET_ARN": (

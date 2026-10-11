@@ -199,6 +199,7 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | --- | --- | --- |
 | `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
 | `MODEL_ID` | `us.anthropic.claude-sonnet-5` | Bedrock model or inference profile |
+| `MAX_OUTPUT_TOKENS` | `16000` | Max tokens in one model response, including a report written via `write_workspace_file` |
 | `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
 | `GITHUB_PAT_SECRET_ARN` | AgentCore-managed `github-pat` secret | Secrets Manager ARN for the GitHub PAT |
 | `GITHUB_PAT_SECRET_JSON_KEY` | `api_key_value` | JSON key inside that secret |
