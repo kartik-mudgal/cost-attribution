@@ -7,15 +7,21 @@ of the same session.
 GitHub access uses the AgentCore Identity API-key credential provider
 ``github-pat`` (created via create-api-key-credential-provider). Tools fetch
 the PAT at call time with @requires_api_key; the token never lives in env vars.
+
+CUR data is queried through Athena (athena_query). The cur-athena, cur-sqs and
+cur-dynamodb skills describe the table and how to query it per service.
 """
 import base64
 import json
 import os
+import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import boto3
 from bedrock_agentcore.identity.auth import requires_api_key
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent, AgentSkills, tool
@@ -27,16 +33,28 @@ GITHUB_DEFAULT_OWNER = os.environ.get("GITHUB_DEFAULT_OWNER", "devrev")
 GITHUB_API = "https://api.github.com"
 # Bundled with the runtime zip next to agent.py; override with SKILLS_DIR.
 SKILLS_DIR = Path(os.environ.get("SKILLS_DIR", str(Path(__file__).resolve().parent / "skills")))
+ATHENA_REGION = os.environ.get("ATHENA_REGION", "us-west-2")
+ATHENA_DATABASE = os.environ.get("ATHENA_DATABASE", "hackathon_cur")
+ATHENA_TABLE = os.environ.get("ATHENA_TABLE", "cost_report")
+ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "cost-agent")
+ATHENA_TIMEOUT_S = int(os.environ.get("ATHENA_TIMEOUT_S", "120"))
+ATHENA_MAX_ROWS = 500
 
-SYSTEM_PROMPT = """You investigate AWS cost changes for one DynamoDB table or SQS queue.
+SYSTEM_PROMPT = f"""You investigate AWS cost changes for DynamoDB tables and SQS queues.
 Use only numbers returned by tools or present in the case. Never invent figures.
 Keep working notes in the workspace so a later call in the same session can continue.
+
+Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
+Before writing any query, load the cur-athena skill, then the skill for the service
+in scope: cur-sqs or cur-dynamodb. Analyse one service at a time.
 
 Skills are available via the skills tool — load github-code-lookup when you
 need GitHub access. That skill uses AgentCore Identity provider ``github-pat``
 to fetch a token for ``devrev`` org repos; never print or request the token.
 
 Answer with: cause, evidence, fix, estimated monthly saving, confidence."""
+
+_athena = boto3.client("athena", region_name=ATHENA_REGION)
 
 
 def _skills_plugin() -> AgentSkills:
@@ -227,11 +245,96 @@ def github_list_pull_requests(owner: str, repo: str, state: str = "closed", per_
     return json.dumps(items, indent=2)
 
 
-# Cost tools go here: get_resource_cost (CUR via DuckDB), get_cloudwatch, describe_resource.
+def _check_sql(sql: str) -> str:
+    """Return the SQL to run, or raise ValueError if it isn't a single read-only query."""
+    body = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
+    body = re.sub(r"--[^\n]*", " ", body).strip().rstrip(";").strip()
+    if ";" in body:
+        raise ValueError("send one statement at a time")
+    keyword = body.split(None, 1)[0].lower() if body else ""
+    if keyword not in ("select", "with", "describe", "show"):
+        raise ValueError("only SELECT, WITH, DESCRIBE and SHOW are allowed")
+    if keyword in ("select", "with") and "billing_period" not in body.lower():
+        raise ValueError("filter on billing_period (e.g. billing_period = '2026-10') so the query reads only the months it needs")
+    return body
+
+
+@tool
+def athena_query(sql: str, max_rows: int = 200) -> str:
+    """Run a read-only SQL query on the CUR table in Athena and return the rows as JSON.
+
+    Load the cur-athena skill before using this. Aggregate in SQL (GROUP BY, ORDER BY ... LIMIT);
+    raw line items will not fit in the result.
+
+    Args:
+        sql: One SELECT, WITH, DESCRIBE or SHOW statement (Athena engine v3 / Trino SQL).
+            SELECT and WITH queries must filter on billing_period.
+        max_rows: Maximum rows to return (1-500).
+    """
+    try:
+        query = _check_sql(sql)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    limit = max(1, min(max_rows, ATHENA_MAX_ROWS))
+
+    qid = _athena.start_query_execution(
+        QueryString=query,
+        QueryExecutionContext={"Database": ATHENA_DATABASE},
+        WorkGroup=ATHENA_WORKGROUP,
+    )["QueryExecutionId"]
+    deadline = time.monotonic() + ATHENA_TIMEOUT_S
+    while True:
+        execution = _athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]
+        state = execution["Status"]["State"]
+        if state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            break
+        if time.monotonic() > deadline:
+            _athena.stop_query_execution(QueryExecutionId=qid)
+            return json.dumps({"query_execution_id": qid, "error": f"timed out after {ATHENA_TIMEOUT_S}s; narrow the dates or aggregate more"})
+        time.sleep(1)
+
+    scanned_mb = round(execution.get("Statistics", {}).get("DataScannedInBytes", 0) / 1e6, 1)
+    if state != "SUCCEEDED":
+        reason = execution["Status"].get("StateChangeReason", state)
+        return json.dumps({"query_execution_id": qid, "error": reason, "data_scanned_mb": scanned_mb})
+
+    columns: list[str] = []
+    rows: list[list[str | None]] = []
+    truncated = False
+    for page in _athena.get_paginator("get_query_results").paginate(QueryExecutionId=qid):
+        if not columns:
+            columns = [c["Name"] for c in page["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]]
+        for row in page["ResultSet"]["Rows"]:
+            values = [d.get("VarCharValue") for d in row["Data"]]
+            if not rows and values == columns:
+                continue  # SELECT results repeat the header as the first row
+            if len(rows) == limit:
+                truncated = True
+                break
+            rows.append(values)
+        if truncated:
+            break
+
+    result = {
+        "query_execution_id": qid,
+        "data_scanned_mb": scanned_mb,
+        "columns": columns,
+        "rows": rows,
+        "row_count": len(rows),
+        "truncated": truncated,
+    }
+    if truncated:
+        result["note"] = (f"Result cut off at {limit} rows. Aggregate further (GROUP BY, coarser time) "
+                          "or rank with ORDER BY ... LIMIT instead of reading more rows.")
+    return json.dumps(result)
+
+
+# Still to add: get_cloudwatch, describe_resource.
 TOOLS = [
     list_workspace,
     read_workspace_file,
     write_workspace_file,
+    athena_query,
     github_search_code,
     github_get_file,
     github_search_commits,
