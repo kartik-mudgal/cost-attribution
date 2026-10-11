@@ -54,6 +54,36 @@ Daily run in more detail:
 | 4 | The agent runs in the background, queries cost and metrics, and returns the full written report to DevRev. |
 | 5 | DevRev posts the report to Slack (plus download links if the agent attached files). |
 
+### AWS × DevRev hackathon stack
+
+Services that **power** the demo (not the AWS products whose bills the agent analyses):
+
+| AWS service | Purpose in this architecture |
+| --- | --- |
+| **Billing → Cost and Usage Report (CUR)** | Daily line-item spend; exported into storage for the agent to investigate. |
+| **Amazon S3** | CUR and demo metrics, agent deploy bundle, optional report downloads, and optional static chat UI assets. |
+| **AWS Glue Data Catalog** | Table definitions so SQL can query CUR and metrics data in S3. |
+| **Amazon Athena** | Read-only SQL the agent uses to pull costs and metrics (scoped workgroup, scan limits). |
+| **Amazon Bedrock** | Claude model inference for analysis and report writing. |
+| **Amazon Bedrock AgentCore Runtime** | Hosts the agent, session workspace, and long-running daily investigations. |
+| **Amazon Bedrock AgentCore Memory** | Short-term chat history and shared facts learned across runs. |
+| **AWS Secrets Manager** | GitHub PAT and optional Grafana gateway credentials (never in code). |
+| **AWS IAM** | Runtime role permissions for Bedrock, Athena, S3, secrets, and memory. |
+| **Amazon CloudWatch Logs** | AgentCore runtime logs for debugging. |
+| **AWS X-Ray** | Optional tracing from the runtime. |
+| **Amazon CloudWatch** | Runtime telemetry; demo usage metrics were scraped from CloudWatch into S3 (agent queries Athena, not the live API). |
+| **AWS Lambda** + **Amazon API Gateway (HTTP)** | Thin proxy DevRev calls to start the agent and return immediately while work continues. |
+| **Amazon CloudFront** | Optional CDN in front of the browser chat UI (`ui/`); not used for the daily Slack path. |
+
+| DevRev capability | Purpose in this architecture |
+| --- | --- |
+| **Scheduled workflow** | Runs the daily cost investigation on a clock. |
+| **Agent / session integration** | Sends the prompt and receives the finished report from the agent. |
+| **Slack** | Posts the daily write-up to the team channel. |
+| **AI gateway (optional)** | Routes **Grafana MCP** when custom app metrics are enabled. |
+
+The agent’s skills also describe how to read **SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache, and Bedrock** spend from CUR—that is the *subject* of analysis, not the hosting stack.
+
 API field names and JSON shapes: [`ui/README.md`](ui/README.md).
 
 ### Inside the agent

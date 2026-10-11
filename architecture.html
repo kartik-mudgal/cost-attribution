@@ -131,6 +131,28 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
       <tr><td><code>github-fix-pr</code></td><td>Optional: open <code>cost-fix/*</code> PRs when a fix is approved</td></tr>
     </tbody>
   </table></div>
+  <div class="phase-head" style="margin-top:18px"><h3>AWS × DevRev services (hackathon stack)</h3></div>
+  <div class="tbl"><table>
+    <thead><tr><th>AWS service</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Cost and Usage Report</td><td>Daily billing export the agent investigates</td></tr>
+      <tr><td>S3</td><td>CUR and metrics data, agent deploy bundle, optional report downloads</td></tr>
+      <tr><td>Glue + Athena</td><td>Catalog and SQL over billing and metrics (read only)</td></tr>
+      <tr><td>Bedrock + AgentCore Runtime</td><td>Model and host for the cost analyst agent</td></tr>
+      <tr><td>AgentCore Memory</td><td>Session history and shared learnings</td></tr>
+      <tr><td>Secrets Manager + IAM</td><td>Credentials and least-privilege access</td></tr>
+      <tr><td>CloudWatch Logs, X-Ray, CloudWatch</td><td>Logs, tracing, runtime metrics; demo usage data scraped into S3</td></tr>
+      <tr><td>Lambda + API Gateway</td><td>Entry point DevRev calls to start a background run</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tbl" style="margin-top:12px"><table>
+    <thead><tr><th>DevRev</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Scheduled workflow</td><td>Daily trigger and report handoff</td></tr>
+      <tr><td>Slack</td><td>Team-facing daily digest</td></tr>
+      <tr><td>AI gateway (optional)</td><td>Grafana MCP for custom app metrics</td></tr>
+    </tbody>
+  </table></div>
   <p style="color:var(--muted);font-size:.9rem;margin:0">Mermaid version: <code>README.md</code> · API details: <code>ui/README.md</code></p>
 </section>
 
