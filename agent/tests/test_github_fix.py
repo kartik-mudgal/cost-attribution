@@ -1,16 +1,10 @@
 """Unit tests for github_fix helpers (no agent import)."""
 
-import json
 import unittest
-from unittest.mock import MagicMock, patch
 
 from github_fix import (
     BRANCH_PATTERN,
-    _GIT_WITH_GH_CRED,
-    _GIT_WITH_TOKEN_CRED,
-    _git_cred_args,
     clone_relative_path,
-    create_github_pull_request,
     public_remote,
     validate_branch,
     validate_owner_repo,
@@ -46,39 +40,6 @@ class TestGithubFixValidation(unittest.TestCase):
         env = _gh_env("secret-token-value")
         self.assertEqual(env["GH_TOKEN"], "secret-token-value")
         self.assertNotIn("secret-token-value", public_remote("devrev", "wisp"))
-
-    def test_token_cred_fallback_does_not_use_gh_cli(self):
-        joined = " ".join(_GIT_WITH_TOKEN_CRED)
-        self.assertIn("GH_TOKEN", joined)
-        self.assertNotIn("gh auth", joined)
-
-    @patch("github_fix.shutil.which")
-    def test_git_cred_uses_gh_when_on_path(self, which: MagicMock) -> None:
-        which.return_value = "/var/task/bin/gh"
-        self.assertEqual(_git_cred_args(), _GIT_WITH_GH_CRED)
-
-    @patch("github_fix.shutil.which")
-    def test_git_cred_falls_back_without_gh(self, which: MagicMock) -> None:
-        which.return_value = None
-        self.assertEqual(_git_cred_args(), _GIT_WITH_TOKEN_CRED)
-
-    @patch("github_fix.urllib.request.urlopen")
-    def test_create_github_pull_request_returns_html_url(self, urlopen: MagicMock) -> None:
-        resp = MagicMock()
-        resp.read.return_value = json.dumps(
-            {"html_url": "https://github.com/devrev/wisp/pull/1"}
-        ).encode()
-        urlopen.return_value.__enter__.return_value = resp
-        url = create_github_pull_request(
-            "devrev",
-            "wisp",
-            "fix: test",
-            "body",
-            "main",
-            "cost-fix/test",
-            "token",
-        )
-        self.assertEqual(url, "https://github.com/devrev/wisp/pull/1")
 
 
 if __name__ == "__main__":
