@@ -34,8 +34,8 @@ must be on the runtime PATH).
 
 Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
 immediately; the investigation continues in a background thread (AgentCore async
-task). When finished the agent must call post_async_webhook, which POSTs the full
-response/report body to the caller-provided webhook_url.
+task). When finished the agent must call post_async_webhook, which POSTs JSON
+``{"session_id": "...", "body": "<full report md>"}`` to the caller webhook_url.
 """
 import asyncio
 import base64
@@ -124,6 +124,10 @@ _report_webhook_url: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 _async_webhook_enabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "async_webhook_enabled", default=False
+)
+# Original Runtime session id for webhook JSON (not S3-safe-normalized).
+_report_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "report_session_id", default=""
 )
 
 SYSTEM_PROMPT = f"""You analyse AWS cost for DevRev's dev account (020040093233) and recommend fixes. Services
@@ -226,13 +230,14 @@ ASYNC_SYSTEM_PROMPT = """
 
 ASYNC INVOKE — WEBHOOK REQUIRED (this run)
 async=true was set and webhook_url was provided. You have the post_async_webhook tool.
-Your last action MUST be post_async_webhook. That tool POSTs body to the caller's webhook.
+Your last action MUST be post_async_webhook. That tool POSTs a JSON object to the
+caller's webhook: {"session_id": "...", "body": "<your full markdown>"}.
 Rules:
 1. Complete the user's request (report or short answer).
 2. If you built a report file, publish_artifact it, then read the full file contents.
 3. Call post_async_webhook exactly once with body = 100% of what you deliver — the full
    report markdown (or your full answer if there is no report). Nothing summarized,
-   truncated, or omitted. The HTTP request body is that text.
+   truncated, or omitted. Pass the markdown string as body; the tool wraps session_id.
 4. Do not end the turn without a successful post_async_webhook result.
 Even for a short prompt (e.g. "hi"), still call post_async_webhook with your full reply.
 """
@@ -470,14 +475,14 @@ def publish_artifact(name: str) -> str:
 
 @tool
 def post_async_webhook(body: str) -> str:
-    """Required final step on async=true invokes: POST body to the caller's webhook_url.
+    """Required final step on async=true invokes: POST JSON to the caller's webhook_url.
 
     Only registered when async=true. Call exactly once at the end of the run with the
-    complete delivery payload (full report markdown, or your full answer). That string
-    becomes the HTTP request body to webhook_url. Do not summarize or truncate.
+    complete report markdown (or full answer). The tool POSTs application/json:
+    {"session_id": "<runtime session>", "body": "<your markdown>"}. Do not summarize.
 
     Args:
-        body: 100% of the report or answer text to POST (not a summary).
+        body: 100% of the report or answer markdown (not a summary).
     """
     if not _async_webhook_enabled.get():
         return json.dumps(
@@ -496,18 +501,14 @@ def post_async_webhook(body: str) -> str:
     if not isinstance(body, str) or not body.strip():
         return json.dumps({"error": "body must be a non-empty string"})
 
-    data = body.encode("utf-8")
-    content_type = "text/plain; charset=utf-8"
-    try:
-        json.loads(body)
-        content_type = "application/json"
-    except json.JSONDecodeError:
-        pass
+    session_id = _report_session_id.get() or _artifact_session.get()
+    payload = {"session_id": session_id, "body": body}
+    data = json.dumps(payload).encode("utf-8")
 
     logger.info(
         "post_async_webhook posting bytes=%s session=%s url=%s",
         len(data),
-        _artifact_session.get(),
+        session_id,
         webhook_url,
     )
     req = urllib.request.Request(
@@ -515,9 +516,9 @@ def post_async_webhook(body: str) -> str:
         data=data,
         method="POST",
         headers={
-            "Content-Type": content_type,
+            "Content-Type": "application/json",
             "Content-Length": str(len(data)),
-            "X-Session-Id": _artifact_session.get(),
+            "X-Session-Id": session_id,
             "User-Agent": "cost-investigator-agent",
         },
     )
@@ -528,7 +529,7 @@ def post_async_webhook(body: str) -> str:
                 "post_async_webhook ok status=%s bytes=%s session=%s",
                 getattr(resp, "status", 200),
                 len(data),
-                _artifact_session.get(),
+                session_id,
             )
             return json.dumps(
                 {
@@ -536,6 +537,7 @@ def post_async_webhook(body: str) -> str:
                     "status": getattr(resp, "status", 200),
                     "bytes": len(data),
                     "webhook_url": webhook_url,
+                    "session_id": session_id,
                     "response": resp_body,
                 }
             )
@@ -544,14 +546,14 @@ def post_async_webhook(body: str) -> str:
         logger.warning(
             "post_async_webhook HTTPError status=%s session=%s detail=%s",
             e.code,
-            _artifact_session.get(),
+            session_id,
             detail,
         )
         return json.dumps({"ok": False, "status": e.code, "error": detail})
     except urllib.error.URLError as e:
         logger.warning(
             "post_async_webhook URLError session=%s err=%s",
-            _artifact_session.get(),
+            session_id,
             e,
         )
         return json.dumps({"ok": False, "error": str(e.reason if hasattr(e, "reason") else e)})
@@ -1001,6 +1003,10 @@ def _bind_async_webhook(enabled: bool) -> None:
     _async_webhook_enabled.set(bool(enabled))
 
 
+def _bind_report_session(session_id: str) -> None:
+    _report_session_id.set(session_id)
+
+
 def _text_events(text: str) -> list[dict]:
     message_id = str(uuid.uuid4())
     return [
@@ -1059,6 +1065,7 @@ async def _run_investigation_silent(
 ) -> None:
     """Run the agent to completion without streaming (background / async jobs)."""
     _bind_artifact_session(session_id)
+    _bind_report_session(session_id)
     _bind_report_webhook(webhook_url)
     _bind_async_webhook(True)
     session_manager = _memory_session_manager(session_id, actor_id)
@@ -1125,6 +1132,7 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     run_id = str(uuid.uuid4())
     webhook_url = _webhook_url_from_payload(payload)
     _bind_artifact_session(session_id)
+    _bind_report_session(session_id)
     _bind_report_webhook(webhook_url)
     _bind_async_webhook(False)
 
