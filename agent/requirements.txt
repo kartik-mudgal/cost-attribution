@@ -1,3 +1,4 @@
 bedrock-agentcore[strands-agents]
 strands-agents
 boto3
+markdown-it-py
