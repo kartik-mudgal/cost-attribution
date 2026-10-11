@@ -416,6 +416,8 @@
 // API_BASE and WS_URL are injected at deploy time; fall back to same-origin for local dev
 const API_BASE = window.__API_BASE || window.location.origin;
 const WS_URL = window.__WS_URL || `${window.location.origin.replace('http', 'ws')}/ws`;
+// Injected at deploy time; required by the proxy (X-Cost-Agent-Secret / api_secret).
+const API_SECRET = window.__API_SECRET || '';
 // Default WebSocket: API Gateway HTTP buffers SSE; WS streams AG-UI events live.
 // Local `ui/local_server.py` only implements SSE — switch the toggle there.
 let transport = 'ws';
@@ -525,16 +527,24 @@ async function sendMessage() {
 async function sendSSE(message) {
     setStatus('streaming', 'streaming...');
     try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (API_SECRET) headers['X-Cost-Agent-Secret'] = API_SECRET;
         const response = await fetch(`${API_BASE}/invocations`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
                 message,
                 prompt: message,
                 session_id: sessionId(),
                 thread_id: threadId || sessionId(),
+                api_secret: API_SECRET || undefined,
             }),
         });
+        if (response.status === 401) {
+            setStatus('error', 'unauthorized — check API secret');
+            finishProcessing();
+            return;
+        }
 
         threadId = response.headers.get('X-Thread-Id') || threadId || sessionId();
         const reader = response.body.getReader();
@@ -575,7 +585,13 @@ function sendWS(message) {
     setStatus('streaming', 'streaming...');
     const sid = threadId || sessionId();
     threadId = sid;
-    ws.send(JSON.stringify({ message, prompt: message, session_id: sid, thread_id: sid }));
+    ws.send(JSON.stringify({
+        message,
+        prompt: message,
+        session_id: sid,
+        thread_id: sid,
+        api_secret: API_SECRET || undefined,
+    }));
 }
 
 function finishProcessing() {

@@ -14,8 +14,55 @@ import { randomUUID } from "crypto";
 const AGENT_RUNTIME_ARN = process.env.AGENT_RUNTIME_ARN;
 const REGION = process.env.REGION || "us-west-2";
 const DEFAULT_ACTOR = process.env.AGENTCORE_ACTOR_ID || "cost-investigator";
+// Shared secret for HTTP header X-Cost-Agent-Secret (or Bearer / body.api_secret).
+const REQUIRED_SECRET = (process.env.COST_AGENT_API_SECRET || "").trim();
 
 const agentClient = new BedrockAgentCoreClient({ region: REGION });
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, X-Cost-Agent-Secret, Authorization",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function headerGet(headers, name) {
+  if (!headers) return "";
+  const want = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === want) return String(v || "");
+  }
+  return "";
+}
+
+function extractSecret(event, body) {
+  const headers = event.headers || {};
+  const fromHeader = headerGet(headers, "x-cost-agent-secret");
+  if (fromHeader) return fromHeader.trim();
+  const auth = headerGet(headers, "authorization");
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  if (body && typeof body.api_secret === "string") return body.api_secret.trim();
+  return "";
+}
+
+function authorize(event, body) {
+  if (!REQUIRED_SECRET) {
+    // Misconfigured deploy — fail closed in Lambda (deploy.sh always sets the secret).
+    return false;
+  }
+  const got = extractSecret(event, body);
+  return got.length > 0 && got === REQUIRED_SECRET;
+}
+
+function unauthorizedJson() {
+  return {
+    statusCode: 401,
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    body: JSON.stringify({
+      error: "unauthorized",
+      message: "Missing or invalid X-Cost-Agent-Secret header",
+    }),
+  };
+}
 
 function sessionIdFrom(body) {
   const sid = body.session_id || body.sessionId || body.thread_id || "";
@@ -162,6 +209,16 @@ async function handleWebSocket(event) {
   } catch (_) {
     body = {};
   }
+  if (!authorize(event, body)) {
+    await postToConnection(apigw, connectionId, {
+      type: "RUN_ERROR",
+      error: {
+        code: "UNAUTHORIZED",
+        message: "Missing or invalid api_secret / X-Cost-Agent-Secret",
+      },
+    });
+    return { statusCode: 200, body: "ok" };
+  }
   const prompt = body.prompt || body.message || "";
   if (!prompt) {
     await postToConnection(apigw, connectionId, {
@@ -204,6 +261,11 @@ async function postToConnection(apigw, connectionId, data) {
 }
 
 async function handleHTTP(event) {
+  // HTTP API CORS preflight
+  if (event.requestContext?.http?.method === "OPTIONS") {
+    return { statusCode: 204, headers: CORS_HEADERS, body: "" };
+  }
+
   let body = {};
   try {
     const raw = event.isBase64Encoded
@@ -213,16 +275,20 @@ async function handleHTTP(event) {
   } catch (_) {
     return {
       statusCode: 400,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
       body: JSON.stringify({ error: "invalid JSON body" }),
     };
+  }
+
+  if (!authorize(event, body)) {
+    return unauthorizedJson();
   }
 
   const prompt = body.prompt || body.message || "";
   if (!prompt) {
     return {
       statusCode: 400,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
       body: JSON.stringify({ error: "prompt or message required" }),
     };
   }
@@ -250,8 +316,8 @@ async function handleHTTP(event) {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
-      "Access-Control-Allow-Origin": "*",
       "X-Thread-Id": sessionId,
+      ...CORS_HEADERS,
     },
     body: events.join(""),
   };

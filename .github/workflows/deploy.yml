@@ -1,5 +1,6 @@
 # Deploy the AgentCore runtime and (optionally) the AG-UI CloudFront stack on main.
 # Required repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Optional repo secrets: COST_AGENT_API_SECRET (else deploy.sh creates/reads Secrets Manager cost-agent-ui/api-secret)
 # Optional repo variable: UI_ALLOWED_CIDR (e.g. 203.0.113.10/32). Default 0.0.0.0/0.
 name: Deploy AgentCore
 
@@ -111,4 +112,6 @@ jobs:
 
       - name: Deploy chat UI (CloudFormation)
         if: steps.plan.outputs.ui == 'true'
+        env:
+          COST_AGENT_API_SECRET: ${{ secrets.COST_AGENT_API_SECRET }}
         run: ./ui/deploy.sh
