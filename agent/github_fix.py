@@ -36,11 +36,14 @@ def public_remote(owner: str, repo: str) -> str:
 
 
 # GH_TOKEN is read by the helper; never put the token in the remote URL.
+# safe.directory=*: workspace mounts are often owned by a different uid than the runtime user.
 _GIT_WITH_TOKEN_CRED = [
     "-c",
     "credential.helper=",
     "-c",
     "credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f",
+    "-c",
+    "safe.directory=*",
 ]
 
 GITHUB_API = "https://api.github.com"
@@ -67,15 +70,26 @@ def _redact(text: str, token: str) -> str:
 
 
 def _run_git(args: list[str], cwd: Path, token: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    proc = subprocess.run(
         ["git", *_GIT_WITH_TOKEN_CRED, *args],
         cwd=cwd,
         env=_gh_env(token),
         capture_output=True,
         text=True,
         timeout=GIT_TIMEOUT_S,
-        check=check,
     )
+    if check and proc.returncode != 0:
+        _fail(proc, token, "git command failed")
+    return proc
+
+
+def _ensure_origin(repo_dir: Path, remote: str, token: str) -> None:
+    """Point origin at the public HTTPS remote (add if the clone has no origin yet)."""
+    existing = _run_git(["remote", "get-url", "origin"], repo_dir, token, check=False)
+    if existing.returncode != 0:
+        _run_git(["remote", "add", "origin", remote], repo_dir, token)
+    else:
+        _run_git(["remote", "set-url", "origin", remote], repo_dir, token)
 
 
 def create_github_pull_request(
@@ -144,7 +158,7 @@ def clone_repository(
 
     remote = public_remote(owner, repo)
     if dest.is_dir() and (dest / ".git").is_dir():
-        _run_git(["remote", "set-url", "origin", remote], dest, token)
+        _ensure_origin(dest, remote, token)
         _run_git(["fetch", "origin", base_branch, "--depth", "50"], dest, token)
         _run_git(["checkout", base_branch], dest, token)
         _run_git(["reset", "--hard", f"origin/{base_branch}"], dest, token)
@@ -170,7 +184,7 @@ def clone_repository(
         )
         if proc.returncode != 0:
             _fail(proc, token, "git clone failed")
-        _run_git(["remote", "set-url", "origin", remote], dest, token)
+        _ensure_origin(dest, remote, token)
         action = "cloned"
 
     head = _run_git(["rev-parse", "HEAD"], dest, token).stdout.strip()
@@ -205,7 +219,7 @@ def create_fix_pull_request(
     if not (repo_dir / ".git").is_dir():
         raise FileNotFoundError(f"clone missing at {rel}; call github_clone_repo first")
 
-    _run_git(["remote", "set-url", "origin", public_remote(owner, repo)], repo_dir, token)
+    _ensure_origin(repo_dir, public_remote(owner, repo), token)
     _run_git(["config", "user.email", "cost-investigator-agent@users.noreply.github.com"], repo_dir, token)
     _run_git(["config", "user.name", "cost-investigator-agent"], repo_dir, token)
 

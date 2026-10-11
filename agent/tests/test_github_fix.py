@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from github_fix import (
     BRANCH_PATTERN,
     _GIT_WITH_TOKEN_CRED,
+    _ensure_origin,
     clone_relative_path,
     create_github_pull_request,
     public_remote,
@@ -14,6 +15,7 @@ from github_fix import (
     validate_owner_repo,
     _gh_env,
 )
+from pathlib import Path
 
 
 class TestGithubFixValidation(unittest.TestCase):
@@ -49,6 +51,29 @@ class TestGithubFixValidation(unittest.TestCase):
         joined = " ".join(_GIT_WITH_TOKEN_CRED)
         self.assertIn("GH_TOKEN", joined)
         self.assertNotIn("gh auth", joined)
+        self.assertIn("safe.directory=*", joined)
+
+    @patch("github_fix._run_git")
+    def test_ensure_origin_adds_when_missing(self, run_git: MagicMock) -> None:
+        missing = MagicMock(returncode=2, stdout="", stderr="")
+        run_git.side_effect = [missing, MagicMock(returncode=0)]
+        _ensure_origin(Path("/tmp/repo"), "https://github.com/devrev/wisp.git", "tok")
+        run_git.assert_any_call(["remote", "get-url", "origin"], Path("/tmp/repo"), "tok", check=False)
+        run_git.assert_any_call(
+            ["remote", "add", "origin", "https://github.com/devrev/wisp.git"],
+            Path("/tmp/repo"),
+            "tok",
+        )
+
+    @patch("github_fix._run_git")
+    def test_ensure_origin_set_url_when_present(self, run_git: MagicMock) -> None:
+        run_git.side_effect = [MagicMock(returncode=0, stdout="https://old\n"), MagicMock(returncode=0)]
+        _ensure_origin(Path("/tmp/repo"), "https://github.com/devrev/wisp.git", "tok")
+        run_git.assert_any_call(
+            ["remote", "set-url", "origin", "https://github.com/devrev/wisp.git"],
+            Path("/tmp/repo"),
+            "tok",
+        )
 
     @patch("github_fix.urllib.request.urlopen")
     def test_create_github_pull_request_returns_html_url(self, urlopen: MagicMock) -> None:
