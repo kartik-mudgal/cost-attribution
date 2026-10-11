@@ -94,8 +94,9 @@ Narrow down step by step; each step is one aggregated query.
    dollar increase; decreases are not anomalies. If nothing passes, there is no anomaly.
 4. **One resource by usage type and operation per day:** which cost line moved, and did volume
    (`line_item_usage_amount`) or cost per unit (cost ÷ usage amount) change?
-5. **The same resource per hour** around the change: when did it move? Use the hour to look
-   for deploys or commits.
+5. **The same resource per hour** around the change: when did it move? Use the hour with the
+   marina-deployments skill (image.tag on devrev/marina) and application-repo commits at the
+   new tag.
 
 Save intermediate results and notes to the workspace (e.g. `notes/<service>-<date>.md`).
 

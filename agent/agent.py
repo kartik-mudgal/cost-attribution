@@ -121,6 +121,9 @@ DATA
   cloudwatch-metrics skill before using it. It is the only source of metric values.
 - Code: GitHub tools for devrev org repos. Load github-code-lookup before using them. They
   load a PAT from Secrets Manager; never print or request the token.
+- Deploys: devrev/marina image.tag changes per env. Load marina-deployments when correlating
+  a cost or metric change to a deploy (anomalies, deep dives); use github_list_commits on the
+  service env values.yaml path.
 - Limits, to state whenever they affect a conclusion: CUR covers 2026-10-01 to 2026-10-10 and
   the last day is partial, so the newest settled day is 2026-10-08. There is no earlier
   month, so baselines are at most 7 days. Metrics are daily, so a cost jump can be timed to
@@ -146,8 +149,9 @@ Decide first, then follow only that type's steps.
    and over $5/day against the baseline, increases only, settled days only. If nothing
    passes, answer "No anomaly", say what you checked, and stop. If confirmed: find which
    cost line moved, whether volume or cost per unit moved, and the hour it started. Then
-   check metrics for a traffic change on that day, then commits and merged PRs in the owning
-   service shortly before the jump.
+   check metrics for a traffic change on that day, then load marina-deployments and list marina
+   image.tag deploys for the owning service in that env shortly before the jump (then app-repo
+   commits at the new tag if needed).
 
 Use at most about 50 tool calls. If you need more, report what you have and say what is
 left.
@@ -458,6 +462,50 @@ def github_search_commits(query: str, owner: str = "", per_page: int = 10) -> st
 
 
 @tool
+def github_list_commits(
+    owner: str,
+    repo: str,
+    path: str,
+    since: str = "",
+    until: str = "",
+    per_page: int = 30,
+) -> str:
+    """List commits on a repository path, newest first (marina deploy history).
+
+    Use for devrev/marina paths like codex/dev/values.yaml around a cost spike window.
+    Pair with github_get_file(ref=sha) to detect image.tag changes between commits.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name (e.g. marina).
+        path: File path in the repo.
+        since: ISO 8601 timestamp; only commits after this time (optional).
+        until: ISO 8601 timestamp; only commits before this time (optional).
+        per_page: Max commits to return (1-100).
+    """
+    params: dict[str, str | int] = {
+        "path": path,
+        "per_page": max(1, min(per_page, 100)),
+    }
+    if since:
+        params["since"] = since
+    if until:
+        params["until"] = until
+    data = _github_request(f"/repos/{owner}/{repo}/commits", params)
+    items = []
+    for hit in data if isinstance(data, list) else []:
+        commit = hit.get("commit", {})
+        items.append({
+            "sha": hit.get("sha"),
+            "message": (commit.get("message") or "").split("\n", 1)[0],
+            "author": (commit.get("author") or {}).get("name"),
+            "date": (commit.get("author") or {}).get("date"),
+            "url": hit.get("html_url"),
+        })
+    return json.dumps(items, indent=2)
+
+
+@tool
 def github_list_pull_requests(owner: str, repo: str, state: str = "closed", per_page: int = 10) -> str:
     """List recent pull requests for a repository (merged/closed by default).
 
@@ -583,6 +631,7 @@ TOOLS = [
     github_search_code,
     github_get_file,
     github_search_commits,
+    github_list_commits,
     github_list_pull_requests,
 ]
 

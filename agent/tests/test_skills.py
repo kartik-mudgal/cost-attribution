@@ -53,6 +53,17 @@ class TestSkills(unittest.TestCase):
         self.assertIn("cloudwatch-metrics", athena)
         self.assertIn("cloudwatch_metrics", athena)
 
+    def test_marina_deployments_skill_bundled_and_wired(self):
+        skill = SKILLS / "marina-deployments" / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        self.assertEqual(skill_name(skill), "marina-deployments")
+        source = AGENT_PY.read_text()
+        self.assertIn("marina-deployments", source)
+        self.assertIn("github_list_commits", source)
+        self.assertIn("marina-deployments", skill.read_text())
+        self.assertIn("github_list_commits", skill.read_text())
+        self.assertIn("/repos/{owner}/{repo}/commits", source)
+
     def test_select_examples_filter_billing_period(self):
         for skill in sorted(SKILLS.glob("*/SKILL.md")):
             for block in re.findall(r"```sql\n(.*?)```", skill.read_text(), re.S):

@@ -258,6 +258,7 @@ Bundled today:
 | Skill | When to use |
 | --- | --- |
 | `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
+| `marina-deployments` | Correlate cost/metric windows to marina `image.tag` deploys and commits |
 | `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
 | `cur-sqs` | SQS: request mix, batching, empty receives, top cost drivers and metrics |
 | `cur-dynamodb` | DynamoDB: on-demand vs provisioned, storage, PITR, Streams, item size |
