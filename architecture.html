@@ -98,13 +98,13 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
   <div class="phase-head">
     <span class="stage">Implemented · Daily cost report</span>
     <h2>End-to-end: CUR → DevRev workflow → agent → Slack</h2>
-    <p>Each day: fresh billing data in AWS, DevRev starts the cost agent, the agent writes a report and hands it back, DevRev shares it in Slack.</p>
+    <p>Each day: fresh billing data in AWS, the DevRev workflow starts the cost agent, the agent returns a report, and the workflow posts it to Slack.</p>
   </div>
   <div class="canvas"><div class="flow">
     <div class="row">
       <div class="box aws"><span class="k">AWS Billing</span><b>Daily export</b><small>Updated cost lines land in storage on a schedule</small></div>
       <div class="box aws store"><span class="k">Storage</span><b>Cost data</b><small>Line-item spend the agent can query</small></div>
-      <div class="box aws store"><span class="k">Storage</span><b>Usage metrics (demo)</b><small>Fixed snapshot so spend can be compared to traffic</small></div>
+      <div class="box aws store"><span class="k">Storage</span><b>Usage metrics (demo)</b><small>Scraped CloudWatch snapshot; production uses the CloudWatch skill live</small></div>
     </div>
     <div class="arrow"><span>agent queries (read only)</span></div>
     <div class="box aws store"><span class="k">Query service</span><b>Costs and metrics</b><small>One place to ask questions about billing and usage</small></div>
@@ -113,10 +113,9 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
       <div class="box devrev"><span class="k">1</span><b>Start analysis</b><small>Send today's prompt; run the agent in the background; remember where to send the answer</small></div>
       <div class="arrow"><span>working…</span></div>
       <div class="box agent"><span class="k">Agent</span><b>Cost investigator</b><small>Reads data, follows playbooks, may check code and optional app metrics</small></div>
-      <div class="arrow"><span>report ready</span></div>
-      <div class="box devrev"><span class="k">2</span><b>Receive report</b><small>Workflow gets the full markdown write-up from the agent</small></div>
+      <div class="arrow"><span>report delivered to workflow</span></div>
     </div>
-    <div class="arrow"><span>share</span></div>
+    <div class="arrow"><span>workflow posts to Slack</span></div>
     <div class="box out"><span class="k">Slack</span><b>Team channel</b><small>Daily cost summary and links to any attached files</small></div>
   </div></div>
 
@@ -141,16 +140,14 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
       <tr><td>Bedrock + AgentCore Runtime</td><td>Model and host for the cost analyst agent</td></tr>
       <tr><td>AgentCore Memory</td><td>Session history and shared learnings</td></tr>
       <tr><td>Secrets Manager + IAM</td><td>Credentials and least-privilege access</td></tr>
-      <tr><td>CloudWatch Logs, X-Ray, CloudWatch</td><td>Logs, tracing, runtime metrics; demo usage data scraped into S3</td></tr>
+      <tr><td>CloudWatch Logs + CloudWatch</td><td>Runtime logs and metrics; demo usage data scraped into storage; production via CloudWatch skill</td></tr>
       <tr><td>Lambda + API Gateway</td><td>Entry point DevRev calls to start a background run</td></tr>
     </tbody>
   </table></div>
   <div class="tbl" style="margin-top:12px"><table>
     <thead><tr><th>DevRev</th><th>Purpose</th></tr></thead>
     <tbody>
-      <tr><td>Scheduled workflow</td><td>Daily trigger and report handoff</td></tr>
-      <tr><td>Slack</td><td>Team-facing daily digest</td></tr>
-      <tr><td>AI gateway (optional)</td><td>Grafana MCP for custom app metrics</td></tr>
+      <tr><td>Scheduled workflow</td><td>Daily trigger; agent handoff; posts finished report to Slack</td></tr>
     </tbody>
   </table></div>
   <p style="color:var(--muted);font-size:.9rem;margin:0">Mermaid version: <code>README.md</code> · API details: <code>ui/README.md</code></p>
