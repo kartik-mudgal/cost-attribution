@@ -33,9 +33,12 @@ github_clone_repo(owner="devrev", repo="<service>", base_branch="main")
 
 Clone path: `repos/devrev/<service>/` (workspace-relative).
 
-Use `read_workspace_file` / `write_workspace_file` with paths like:
+Use workspace paths like `repos/devrev/wisp/pkg/queue/client.go`.
 
-`repos/devrev/wisp/pkg/queue/client.go`
+**Prefer `edit_workspace_file`** (search-and-replace with enough context that `old_string`
+matches once). That keeps tool payloads small and fast on AgentCore. Use `read_workspace_file`
+only for the section you need—not necessarily the whole file. Reserve `write_workspace_file` for
+new notes under `notes/`, not for large cloned source files.
 
 Re-read surrounding code before editing; keep the diff **minimal** (one concern per PR).
 

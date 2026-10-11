@@ -28,8 +28,9 @@ GRAFANA_MCP_URL (off by default). Its virtual key is read from Secrets Manager
 User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns a
 presigned download URL for each file.
 
-With github-fix-pr, the agent may clone devrev repos under workspace/repos/ and open fix PRs
-via github_clone_repo and github_create_fix_pr (gh and git must be on the runtime PATH).
+With github-fix-pr, the agent may clone devrev repos under workspace/repos/, edit files with
+edit_workspace_file, and open fix PRs via github_clone_repo and github_create_fix_pr (gh and git
+must be on the runtime PATH).
 
 Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
 immediately; the investigation continues in a background thread (AgentCore async
@@ -377,12 +378,48 @@ def write_workspace_file(name: str, content: str) -> str:
     """Write a file to the session workspace (notes or one report section).
 
     For a report, prefer append_workspace_file so each call stays one section.
+    For edits under repos/ after github_clone_repo, prefer edit_workspace_file so only
+    the changed snippet is sent—not the whole file.
     User-facing artifacts must also be passed to publish_artifact.
     """
     path = _safe_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return f"wrote {len(content)} bytes to {name}"
+
+
+@tool
+def edit_workspace_file(
+    name: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    """Apply a small search-and-replace edit in the session workspace.
+
+    Use this for code fixes under repos/<owner>/<repo>/ after github_clone_repo.
+    Include enough surrounding lines in old_string that it matches exactly once.
+    read_workspace_file only the region you need before editing.
+
+    Args:
+        name: Workspace-relative path, e.g. repos/devrev/wisp/pkg/foo.go.
+        old_string: Exact text to replace (empty only when creating a new file).
+        new_string: Replacement text.
+        replace_all: If true, replace every occurrence of old_string.
+    """
+    from workspace_edit import apply_workspace_edit
+
+    try:
+        result = apply_workspace_edit(
+            WORKSPACE,
+            name,
+            old_string,
+            new_string,
+            replace_all=replace_all,
+        )
+    except (ValueError, FileNotFoundError, OSError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps({**result, "path": name})
 
 
 @tool
@@ -686,7 +723,8 @@ def github_clone_repo(owner: str, repo: str, base_branch: str = "main") -> str:
     """Clone or refresh a devrev GitHub repo into the session workspace for code fixes.
 
     Files appear under workspace/repos/<owner>/<repo>/. Edit them with read_workspace_file and
-    write_workspace_file using that prefix. Load github-fix-pr before use.
+    edit_workspace_file (preferred) or write_workspace_file using that prefix. Load github-fix-pr
+    before use.
 
     Args:
         owner: Repository owner (must be GITHUB_DEFAULT_OWNER / devrev).
@@ -843,6 +881,7 @@ TOOLS = [
     list_workspace,
     read_workspace_file,
     write_workspace_file,
+    edit_workspace_file,
     append_workspace_file,
     publish_artifact,
     athena_query,
