@@ -75,6 +75,31 @@ JSON mode (`"stream": false` or `"response_format": "json"`) returns:
 {"status_code":200,"session_id":"...","markdown":"Hi! ...","error":null}
 ```
 
+### Workflow: async invoke + webhook
+
+Pass `"async": true` and a `webhook_url`. AgentCore accepts quickly and runs in the
+background. When ready, `notify_report_ready` POSTs the **entire report body** to
+that URL (`X-Session-Id` header set).
+
+```bash
+SECRET=$(aws secretsmanager get-secret-value --secret-id cost-agent-ui/api-secret \
+  --query SecretString --output text --region us-west-2)
+SID="session-workflow-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+WEBHOOK='https://api.dev.devrev-eng.ai/hidden/dev-orgs/DEV-787/event-source-webhooks/custom/12970cfe-a77d-47a6-a95c-cff600d60a07'
+
+curl -sS -X POST 'https://<HttpApiUrl>/invocations' \
+  -H 'Content-Type: application/json' \
+  -H "X-Cost-Agent-Secret: $SECRET" \
+  -d "{
+    \"async\": true,
+    \"webhook_url\": \"$WEBHOOK\",
+    \"session_id\": \"$SID\",
+    \"prompt\": \"Investigate SQS cost for October 2026. Write the full report, publish_artifact, then notify_report_ready with the entire report markdown as body.\"
+  }"
+# → 202 {"accepted":true,"session_id":"...","webhook_url":"..."}
+# Missing webhook_url → 400
+```
+
 This is a basic shared gate (the browser UI embeds the secret at deploy time).
 It stops casual anonymous abuse; it is not per-user auth.
 
