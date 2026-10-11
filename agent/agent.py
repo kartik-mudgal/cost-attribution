@@ -26,6 +26,9 @@ GRAFANA_MCP_URL (off by default). Its virtual key is read from Secrets Manager
 
 User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns a
 presigned download URL for each file.
+
+With github-fix-pr, the agent may clone devrev repos under workspace/repos/ and open fix PRs
+via github_clone_repo and github_create_fix_pr (git must be on the runtime PATH).
 """
 import base64
 import contextvars
@@ -33,6 +36,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -61,6 +65,7 @@ from artifacts import (
     publish_workspace_file,
     safe_session_id,
 )
+from github_fix import clone_repository, create_fix_pull_request
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +115,9 @@ RULES FOR EVERY REQUEST
   values, file paths, function names or URLs.
 - Every number you report comes from a query; cite its Athena query ID. Every code claim
   cites repo, file and function.
-- All your actions are read-only. Never create, change or delete anything in AWS or GitHub.
+- AWS is read-only. Never create, change or delete anything in AWS.
+- GitHub writes are allowed only when you load github-fix-pr and the user asked for a code fix
+  or explicitly approved opening a PR; use github_clone_repo and github_create_fix_pr only then.
 - Keep working notes in the workspace so a later call in the same session can continue.
 
 DATA
@@ -124,6 +131,8 @@ DATA
 - Deploys: devrev/marina image.tag changes per env. Load marina-deployments when correlating
   a cost or metric change to a deploy (anomalies, deep dives); use github_list_commits on the
   service env values.yaml path.
+- Fix PRs: load github-fix-pr to clone a repo, edit under workspace/repos/, then open a PR with
+  github_create_fix_pr (branch must be cost-fix/<slug>).
 - Limits, to state whenever they affect a conclusion: CUR covers 2026-10-01 to 2026-10-10 and
   the last day is partial, so the newest settled day is 2026-10-08. There is no earlier
   month, so baselines are at most 7 days. Metrics are daily, so a cost jump can be timed to
@@ -280,26 +289,47 @@ def _grafana_mcp() -> MCPClient | None:
     )
 
 
-def _github_request(path: str, params: dict | None = None, accept: str = "application/vnd.github+json") -> dict | list:
+def _github_request(
+    path: str,
+    params: dict | None = None,
+    accept: str = "application/vnd.github+json",
+    method: str = "GET",
+    body: dict | None = None,
+) -> dict | list:
     token = _github_pat()
-    query = f"?{urllib.parse.urlencode(params)}" if params else ""
+    query = f"?{urllib.parse.urlencode(params)}" if params and method == "GET" else ""
     url = f"{GITHUB_API}{path}{query}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": accept,
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "cost-investigator-agent",
-        },
-    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": accept,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "cost-investigator-agent",
+    }
+    data: bytes | None = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode()
-            return json.loads(body) if body else {}
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         detail = e.read().decode()[:500]
         raise RuntimeError(f"GitHub API {e.code} for {path}: {detail}") from e
+
+
+def _github_open_pull_request(
+    owner: str, repo: str, title: str, body: str, head: str, base: str
+) -> dict:
+    result = _github_request(
+        f"/repos/{owner}/{repo}/pulls",
+        method="POST",
+        body={"title": title, "body": body, "head": head, "base": base},
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("unexpected GitHub response creating pull request")
+    return result
 
 
 @tool
@@ -536,6 +566,79 @@ def github_list_pull_requests(owner: str, repo: str, state: str = "closed", per_
     return json.dumps(items, indent=2)
 
 
+@tool
+def github_clone_repo(owner: str, repo: str, base_branch: str = "main") -> str:
+    """Clone or refresh a devrev GitHub repo into the session workspace for code fixes.
+
+    Files appear under workspace/repos/<owner>/<repo>/. Edit them with read_workspace_file and
+    write_workspace_file using that prefix. Load github-fix-pr before use.
+
+    Args:
+        owner: Repository owner (must be GITHUB_DEFAULT_OWNER / devrev).
+        repo: Repository name.
+        base_branch: Branch to clone (default main).
+    """
+    try:
+        result = clone_repository(
+            WORKSPACE,
+            owner,
+            repo,
+            base_branch,
+            _github_pat(),
+            GITHUB_DEFAULT_OWNER,
+        )
+    except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result, indent=2)
+
+
+@tool
+def github_create_fix_pr(
+    owner: str,
+    repo: str,
+    branch: str,
+    title: str,
+    body: str,
+    commit_message: str,
+    base_branch: str = "main",
+    paths: str = "",
+) -> str:
+    """Commit changes in the workspace clone, push branch, and open a pull request.
+
+    Load github-fix-pr first. Branch must be cost-fix/<slug>. Stage all changes or only paths
+    (comma-separated, repo-relative).
+
+    Args:
+        owner: Repository owner (devrev).
+        repo: Repository name.
+        branch: New branch name, e.g. cost-fix/sqs-getqueueurl-wisp.
+        title: PR title.
+        body: PR description (include cost evidence and query IDs).
+        commit_message: Single git commit message.
+        base_branch: Target branch for the PR (default main).
+        paths: Optional comma-separated paths under the clone to stage.
+    """
+    path_list = [p.strip() for p in paths.split(",") if p.strip()] or None
+    try:
+        result = create_fix_pull_request(
+            WORKSPACE,
+            owner,
+            repo,
+            branch,
+            base_branch,
+            title,
+            body,
+            commit_message,
+            _github_pat(),
+            GITHUB_DEFAULT_OWNER,
+            path_list,
+            lambda o, r, t, b, h, base: _github_open_pull_request(o, r, t, b, h, base),
+        )
+    except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result, indent=2)
+
+
 def _check_sql(sql: str) -> str:
     """Return the SQL to run, or raise ValueError if it isn't a single read-only query."""
     body = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
@@ -633,6 +736,8 @@ TOOLS = [
     github_search_commits,
     github_list_commits,
     github_list_pull_requests,
+    github_clone_repo,
+    github_create_fix_pr,
 ]
 
 

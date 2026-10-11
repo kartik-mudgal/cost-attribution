@@ -64,6 +64,17 @@ class TestSkills(unittest.TestCase):
         self.assertIn("github_list_commits", skill.read_text())
         self.assertIn("/repos/{owner}/{repo}/commits", source)
 
+    def test_github_fix_pr_skill_bundled_and_wired(self):
+        skill = SKILLS / "github-fix-pr" / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        self.assertEqual(skill_name(skill), "github-fix-pr")
+        source = AGENT_PY.read_text()
+        self.assertIn("github-fix-pr", source)
+        self.assertIn("github_clone_repo", source)
+        self.assertIn("github_create_fix_pr", source)
+        package = (AGENT_DIR.parent / "deploy" / "package.sh").read_text()
+        self.assertIn("github_fix.py", package)
+
     def test_select_examples_filter_billing_period(self):
         for skill in sorted(SKILLS.glob("*/SKILL.md")):
             for block in re.findall(r"```sql\n(.*?)```", skill.read_text(), re.S):
