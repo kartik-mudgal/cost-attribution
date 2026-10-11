@@ -107,13 +107,10 @@ def _agui_wrap_text(text: str) -> Iterator[bytes]:
 
 
 def _maybe_wrap_payload(data: bytes) -> Iterator[bytes]:
-    """Pass through SSE; wrap legacy JSON ``{result: ...}`` as AG-UI events."""
+    """Wrap legacy JSON ``{result: ...}`` as AG-UI events."""
     stripped = data.lstrip()
     if not stripped:
         yield from _agui_wrap_text("(empty response from runtime)")
-        return
-    if stripped.startswith(b"data:"):
-        yield data
         return
     try:
         obj = json.loads(stripped)
@@ -126,7 +123,19 @@ def _maybe_wrap_payload(data: bytes) -> Iterator[bytes]:
     yield from _agui_wrap_text(json.dumps(obj, indent=2))
 
 
+def _iter_body_chunks(body: object) -> Iterator[bytes]:
+    if hasattr(body, "iter_chunks"):
+        for chunk in body.iter_chunks(chunk_size=256):
+            if chunk:
+                yield _as_bytes(chunk)
+        return
+    data = body.read()  # type: ignore[attr-defined]
+    if data:
+        yield _as_bytes(data)
+
+
 def _stream_runtime(prompt: str, session_id: str) -> Iterator[bytes]:
+    """Forward AG-UI SSE events live; buffer only for legacy JSON responses."""
     client = boto3.client("bedrock-agentcore", region_name=REGION)
     resp = client.invoke_agent_runtime(
         agentRuntimeArn=_runtime_arn(),
@@ -137,18 +146,38 @@ def _stream_runtime(prompt: str, session_id: str) -> Iterator[bytes]:
         ).encode(),
     )
     body = resp["response"]
-    # Always buffer: current deployed runtime returns JSON, not SSE. StreamingBody
-    # still exposes iter_chunks, so we must not passthrough those bytes blindly.
-    chunks: list[bytes] = []
-    if hasattr(body, "iter_chunks"):
-        for chunk in body.iter_chunks():
-            if chunk:
-                chunks.append(_as_bytes(chunk))
+    buf = b""
+    mode: str | None = None  # "sse" | "json"
+
+    for chunk in _iter_body_chunks(body):
+        if mode is None:
+            buf += chunk
+            stripped = buf.lstrip()
+            if not stripped:
+                continue
+            if stripped.startswith(b"data:"):
+                mode = "sse"
+                buf = stripped
+            else:
+                mode = "json"
+                buf = stripped
+                continue
+
+        if mode == "json":
+            buf += chunk
+            continue
+
+        # SSE: emit each complete event (terminated by blank line) immediately.
+        buf += chunk
+        while b"\n\n" in buf:
+            event, buf = buf.split(b"\n\n", 1)
+            yield event + b"\n\n"
+
+    if mode == "sse":
+        if buf.strip().startswith(b"data:"):
+            yield buf if buf.endswith(b"\n\n") else buf + b"\n\n"
     else:
-        data = body.read()
-        if data:
-            chunks.append(_as_bytes(data))
-    yield from _maybe_wrap_payload(b"".join(chunks))
+        yield from _maybe_wrap_payload(buf)
 
 
 class Handler(SimpleHTTPRequestHandler):

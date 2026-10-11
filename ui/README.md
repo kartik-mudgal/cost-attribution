@@ -1,6 +1,6 @@
-# Cost investigator chat UI
+# DevRev AWS Cost Investigator — chat UI
 
-Local chat frontend for the AgentCore cost investigator, adapted from
+Local and CloudFront chat frontend for the AgentCore cost investigator, adapted from
 [aws-samples/sample-agui-bedrock-agentcore](https://github.com/aws-samples/sample-agui-bedrock-agentcore).
 
 ## Local demo (against deployed runtime)
@@ -23,13 +23,22 @@ Optional: point at a local agent instead of the deployed runtime:
 COST_AGENT_URL=http://127.0.0.1:8080 uv run --with boto3 python ui/local_server.py
 ```
 
-## AWS-hosted UI (optional)
+## AWS-hosted UI (CloudFormation)
 
-`deploy/cloudformation.yaml` + `deploy/proxy/` are the sample’s CloudFront /
-API Gateway / Lambda proxy. After the stack is up, set the proxy Lambda’s
-`AGENT_RUNTIME_ARN` to your cost investigator runtime ARN and upload
-`frontend/index.html` (inject `window.__API_BASE` / `window.__WS_URL` from stack
-outputs). Prefer the local server for hackathon demos.
+Deploys S3 + CloudFront (HTML) and API Gateway + Lambda (SigV4 proxy to your
+AgentCore runtime). Needs Node 20+, AWS credentials, and
+`deploy/build/runtime.json`.
+
+```bash
+# from repo root — uses your public IP as CloudFront allowlist (/32)
+./ui/deploy.sh
+
+# or pin CIDR / stack name
+ALLOWED_CIDR=203.0.113.10/32 STACK_NAME=cost-agent-ui ./ui/deploy.sh
+```
+
+First create takes ~5 minutes (CloudFront). The script prints the Frontend URL.
+Re-run to update the proxy zip, Lambda env, and `index.html`.
 
 ## Notes
 

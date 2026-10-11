@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AG-UI Sample — Agent-User Interface Protocol</title>
+    <title>DevRev AWS Cost Investigator</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
     <style>
         :root {
             --bg: #0f1117;
@@ -55,6 +57,7 @@
         /* Main layout */
         .main {
             flex: 1;
+            min-height: 0;
             display: grid;
             grid-template-columns: 1fr 340px;
             overflow: hidden;
@@ -64,12 +67,34 @@
         .chat-panel {
             display: flex;
             flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
             border-right: 1px solid var(--border);
         }
         .messages {
-            flex: 1;
+            flex: 1 1 auto;
+            min-height: 0;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 16px;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+        .messages::-webkit-scrollbar {
+            width: 10px;
+        }
+        .messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .messages::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 6px;
+            border: 2px solid var(--bg);
+        }
+        .messages::-webkit-scrollbar-thumb:hover {
+            background: var(--text-dim);
         }
         .message {
             margin-bottom: 16px;
@@ -77,15 +102,93 @@
             border-radius: 8px;
             font-size: 14px;
             line-height: 1.6;
-            white-space: pre-wrap;
+            overflow-wrap: anywhere;
         }
         .message.user {
             background: var(--surface2);
             border-left: 3px solid var(--accent);
+            white-space: pre-wrap;
         }
         .message.assistant {
             background: var(--surface);
             border-left: 3px solid var(--green);
+        }
+        .message .content {
+            display: block;
+            max-height: min(60vh, 480px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+        .message .content > :first-child { margin-top: 0; }
+        .message .content > :last-child { margin-bottom: 0; }
+        .message .content p { margin: 0.55em 0; }
+        .message .content h1,
+        .message .content h2,
+        .message .content h3,
+        .message .content h4 {
+            color: var(--accent);
+            font-weight: 600;
+            margin: 0.9em 0 0.4em;
+            line-height: 1.3;
+        }
+        .message .content h1 { font-size: 1.25em; }
+        .message .content h2 { font-size: 1.12em; }
+        .message .content h3 { font-size: 1.05em; }
+        .message .content ul,
+        .message .content ol {
+            margin: 0.45em 0 0.45em 1.25em;
+            padding: 0;
+        }
+        .message .content li { margin: 0.2em 0; }
+        .message .content strong { color: #e6eaf2; font-weight: 650; }
+        .message .content em { color: var(--cyan); }
+        .message .content a { color: var(--accent); }
+        .message .content code {
+            font-family: inherit;
+            font-size: 0.9em;
+            background: var(--surface2);
+            padding: 0.1em 0.35em;
+            border-radius: 4px;
+            color: var(--orange);
+        }
+        .message .content pre {
+            margin: 0.65em 0;
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        .message .content pre code {
+            background: none;
+            padding: 0;
+            color: var(--text);
+        }
+        .message .content blockquote {
+            margin: 0.55em 0;
+            padding: 0.2em 0 0.2em 0.8em;
+            border-left: 3px solid var(--purple);
+            color: var(--text-dim);
+        }
+        .message .content table {
+            border-collapse: collapse;
+            margin: 0.65em 0;
+            font-size: 12px;
+            width: 100%;
+        }
+        .message .content th,
+        .message .content td {
+            border: 1px solid var(--border);
+            padding: 6px 8px;
+            text-align: left;
+        }
+        .message .content th { background: var(--surface2); color: var(--accent); }
+        .message .content hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 0.9em 0;
         }
         .message .role {
             font-size: 11px;
@@ -137,6 +240,7 @@
 
         /* Input area */
         .input-area {
+            flex-shrink: 0;
             padding: 12px 16px;
             background: var(--surface);
             border-top: 1px solid var(--border);
@@ -269,7 +373,7 @@
 <body>
 
 <div class="header">
-    <h1>Cost Investigator</h1>
+    <h1>DevRev AWS Cost Investigator</h1>
     <div style="display:flex;gap:12px;align-items:center;">
         <div class="transport-toggle">
             <button id="btn-sse" class="active" onclick="setTransport('sse')">SSE</button>
@@ -580,11 +684,25 @@ function addUserMessage(text) {
     scrollMessages();
 }
 
+function renderMarkdown(text) {
+    if (typeof marked !== 'undefined') {
+        marked.setOptions({ breaks: true, gfm: true });
+        const html = marked.parse(text || '');
+        if (typeof DOMPurify !== 'undefined') {
+            return DOMPurify.sanitize(html, {
+                USE_PROFILES: { html: true },
+            });
+        }
+        return html;
+    }
+    return escapeHtml(text || '').replace(/\n/g, '<br>');
+}
+
 function createAssistantMessage(id) {
     const el = document.createElement('div');
     el.className = 'message assistant';
     el.id = `msg-${id}`;
-    el.innerHTML = `<div class="role">Assistant</div><span class="content"></span>`;
+    el.innerHTML = `<div class="role">Assistant</div><div class="content"></div>`;
     document.getElementById('messages').appendChild(el);
     scrollMessages();
     return el;
@@ -592,7 +710,9 @@ function createAssistantMessage(id) {
 
 function appendToMessage(el, delta) {
     const content = el.querySelector('.content');
-    if (content) content.textContent += delta;
+    if (!content) return;
+    content.dataset.raw = (content.dataset.raw || '') + (delta || '');
+    content.innerHTML = renderMarkdown(content.dataset.raw);
     scrollMessages();
 }
 
