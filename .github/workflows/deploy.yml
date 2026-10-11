@@ -40,6 +40,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
 
+      # Idempotent: overwrites the inline policy; unchanged JSON is a no-op for permissions.
+      - name: Apply runtime IAM role policy
+        run: |
+          aws iam put-role-policy \
+            --role-name cost-agent-runtime-role \
+            --policy-name runtime \
+            --policy-document file://deploy/role-policy.json
+
       - name: Package and upload agent zip
         run: ./deploy/package.sh
 
