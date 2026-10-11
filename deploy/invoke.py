@@ -25,7 +25,9 @@ resp = client.invoke_agent_runtime(
     agentRuntimeArn=arn,
     runtimeSessionId=session,
     runtimeUserId=user_id,
-    payload=json.dumps({"prompt": prompt}).encode(),
+    payload=json.dumps(
+        {"prompt": prompt, "actor_id": user_id, "session_id": session}
+    ).encode(),
 )
 print("session:", session)
 print("user:", user_id)

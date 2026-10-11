@@ -1,0 +1,14 @@
+{
+  "name": "agui-bedrock-agentcore-proxy",
+  "version": "1.0.0",
+  "description": "Streaming proxy for AG-UI requests to Bedrock AgentCore Runtime",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "^3.700.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.700.0"
+  }
+}

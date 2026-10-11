@@ -8,6 +8,10 @@ BedrockAgentCoreApp wraps each yielded dict as ``data: {...}\\n\\n``.
 Session storage is mounted at WORKSPACE so files written in one invocation
 are visible in later invocations of the same session.
 
+When AGENTCORE_MEMORY_ID is set, short-term conversation turns are loaded and
+saved via AgentCore Memory (AgentCoreMemorySessionManager) keyed by the
+Runtime session id and actor id. No long-term strategies are configured.
+
 GitHub access reads a PAT from AWS Secrets Manager (JSON key api_key_value).
 Default secret is the AgentCore-managed github-pat vault entry; override with
 GITHUB_PAT_SECRET_ARN. The token is never logged or returned to the model.
@@ -33,7 +37,12 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 import boto3
+from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+from bedrock_agentcore.memory.integrations.strands.session_manager import (
+    AgentCoreMemorySessionManager,
+)
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from bedrock_agentcore.runtime.context import RequestContext
 from strands import Agent, AgentSkills, tool
 from strands.tools.mcp import MCPClient
 
@@ -41,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "").strip()
+AGENTCORE_ACTOR_ID = os.environ.get("AGENTCORE_ACTOR_ID", "cost-investigator")
+AWS_REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
 GITHUB_DEFAULT_OWNER = os.environ.get("GITHUB_DEFAULT_OWNER", "devrev")
 GITHUB_API = "https://api.github.com"
 # AgentCore Identity stores the PAT under this managed secret (JSON: api_key_value).
@@ -82,7 +94,7 @@ org repos; never print or request the token.
 Answer with: cause, evidence, fix, estimated monthly saving, confidence."""
 
 _athena = boto3.client("athena", region_name=ATHENA_REGION)
-_secrets = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+_secrets = boto3.client("secretsmanager", region_name=AWS_REGION)
 _github_pat_cache: str | None = None
 _grafana_key_cache: str | None = None
 
@@ -476,27 +488,69 @@ def _prompt_from_payload(payload: dict) -> str:
     )
 
 
-def _build_agent() -> Agent:
-    grafana = _grafana_mcp()
-    return Agent(
-        model=MODEL_ID,
-        system_prompt=SYSTEM_PROMPT,
-        tools=TOOLS + ([grafana] if grafana else []),
-        plugins=[_skills_plugin()],
+def _actor_id(payload: dict) -> str:
+    actor = payload.get("actor_id") or payload.get("user_id") or AGENTCORE_ACTOR_ID
+    return str(actor) if actor else "cost-investigator"
+
+
+def _session_id(payload: dict, context: RequestContext | None) -> str:
+    if context and context.session_id and len(context.session_id) >= 33:
+        return context.session_id
+    sid = payload.get("session_id") or payload.get("sessionId") or ""
+    if isinstance(sid, str) and len(sid) >= 33:
+        return sid
+    return f"session-{uuid.uuid4().hex}"
+
+
+def _memory_session_manager(
+    session_id: str, actor_id: str
+) -> AgentCoreMemorySessionManager | None:
+    """Build STM session manager when AGENTCORE_MEMORY_ID is configured."""
+    if not AGENTCORE_MEMORY_ID:
+        return None
+    config = AgentCoreMemoryConfig(
+        memory_id=AGENTCORE_MEMORY_ID,
+        session_id=session_id,
+        actor_id=actor_id,
+        batch_size=1,
     )
+    return AgentCoreMemorySessionManager(config, region_name=AWS_REGION)
+
+
+def _build_agent(session_manager: AgentCoreMemorySessionManager | None = None) -> Agent:
+    grafana = _grafana_mcp()
+    kwargs: dict[str, Any] = {
+        "model": MODEL_ID,
+        "system_prompt": SYSTEM_PROMPT,
+        "tools": TOOLS + ([grafana] if grafana else []),
+        "plugins": [_skills_plugin()],
+    }
+    if session_manager is not None:
+        kwargs["session_manager"] = session_manager
+    return Agent(**kwargs)
 
 
 @app.entrypoint
-async def invoke(payload: dict) -> AsyncIterator[dict]:
+async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     """Stream AG-UI events for the cost investigator run."""
     prompt = _prompt_from_payload(payload)
+    session_id = _session_id(payload, context)
+    actor_id = _actor_id(payload)
     run_id = str(uuid.uuid4())
-    agent = _build_agent()
+    session_manager = _memory_session_manager(session_id, actor_id)
+    agent = _build_agent(session_manager=session_manager)
 
     yield _agui_event("RUN_STARTED", runId=run_id)
     yield _agui_event(
         "STATE_SNAPSHOT",
-        snapshot={"status": "processing", "tools_invoked": [], "workspace_files": list_workspace()},
+        snapshot={
+            "status": "processing",
+            "tools_invoked": [],
+            "workspace_files": list_workspace(),
+            "session_id": session_id,
+            "actor_id": actor_id,
+            "memory_enabled": bool(session_manager),
+        },
     )
 
     active_text_msg_id: str | None = None
@@ -589,6 +643,8 @@ async def invoke(payload: dict) -> AsyncIterator[dict]:
             error={"code": "AGENT_ERROR", "message": str(e)},
         )
     finally:
+        if session_manager is not None:
+            session_manager.close()
         agent.cleanup()
 
 

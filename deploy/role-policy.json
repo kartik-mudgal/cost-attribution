@@ -116,6 +116,17 @@
       "Effect": "Allow",
       "Action": ["s3:GetObject"],
       "Resource": "arn:aws:s3:::cur-report-270149200236-us-west-2-an/devrev-dev-us-east-1-cost-report/*"
+    },
+    {
+      "Sid": "AgentCoreMemoryStm",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:CreateEvent",
+        "bedrock-agentcore:GetEvent",
+        "bedrock-agentcore:ListEvents",
+        "bedrock-agentcore:DeleteEvent"
+      ],
+      "Resource": "arn:aws:bedrock-agentcore:us-west-2:270149200236:memory/cost_investigator_stm-*"
     }
   ]
 }
