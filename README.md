@@ -369,3 +369,40 @@ agent is told to stop at about 50 tool calls.
 The prompt hard-codes the data window (CUR 2026-10-01 to 2026-10-10, newest settled day
 2026-10-08) because the data is a static snapshot. Update it, and the dates in `cur-athena`,
 if newer CUR data is loaded.
+
+## Shared memory (learning from past requests)
+
+`agent/memory.py` gives the agent long-term memory shared by all users, stored as records in the
+same AgentCore Memory resource as the short-term turns (`AGENTCORE_MEMORY_ID`). It is on whenever
+that variable is set.
+
+Memory is split by kind, so the agent recalls only what the current step needs:
+
+| Namespace | Holds | Recalled for |
+| --- | --- | --- |
+| `/cost-agent/resource-map/<service>` | Where a resource is defined, who owns it, which code calls it | Deep dives; anomalies once the resource is known |
+| `/cost-agent/queries/<service or all>` | SQL that answered a kind of question | Deep dives |
+| `/cost-agent/conclusions/<service>` | Past findings and their outcome (accepted, rejected, not an issue) | Overviews, deep dives, anomalies |
+| `/cost-agent/lessons/<overview, deep-dive, anomaly>` | What made that kind of request faster | Start of that request type |
+
+- `recall(kind, scope, query)` searches one namespace. `remember(kind, scope, fact, evidence)`
+  saves one verified fact with its evidence and date, and skips near-duplicates.
+- Records are written directly (`BatchCreateMemoryRecords`); no strategy extracts them from
+  conversations, so only facts the agent verified are stored.
+- A resource-map record replaces the code search. Memory is never evidence: figures in an answer
+  always come from a fresh query.
+- Quick questions don't use memory.
+
+Measured on "Deep dive into hubble-parquet-ingest-queue, including code references": 37 tool
+calls and 10 code searches with empty memory; 19 calls and no code searches on the next request,
+with the same finding and code references.
+
+To test without touching the shared records, set `SHARED_MEMORY_ROOT` (e.g. `/cost-agent-test`).
+To see or clear what the agent has learned:
+
+```bash
+aws bedrock-agentcore list-memory-records --region us-west-2 \
+  --memory-id cost_investigator_stm-geZl5e2x3J --namespace-path /cost-agent/
+aws bedrock-agentcore delete-memory-record --region us-west-2 \
+  --memory-id cost_investigator_stm-geZl5e2x3J --memory-record-id <id>
+```
