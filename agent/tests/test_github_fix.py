@@ -1,19 +1,19 @@
 """Unit tests for github_fix helpers (no agent import)."""
 
-import base64
 import json
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from github_fix import (
     BRANCH_PATTERN,
-    _git_auth_args,
     _git_env,
     _redact,
     _run_git,
+    authed_remote,
     clone_relative_path,
     clone_repository,
     create_github_pull_request,
@@ -34,7 +34,6 @@ class TestRunGit(unittest.TestCase):
         self.assertIn("git remote failed (exit 128)", message)
         self.assertIn("not a git repository", message)
         self.assertNotIn(TOKEN, message)
-        self.assertNotIn(base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode(), message)
 
     def test_check_false_returns_process(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,9 +46,9 @@ class TestRunGit(unittest.TestCase):
                 _run_git(["clone", "x"], Path("."), TOKEN)
         self.assertNotIn(TOKEN, str(ctx.exception))
 
-    def test_redact_hides_token_and_basic_credential(self):
-        encoded = base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode()
-        self.assertEqual(_redact(f"a {TOKEN} b {encoded}", TOKEN), "a *** b ***")
+    def test_redact_hides_token_and_url_encoded_form(self):
+        quoted = urllib.parse.quote(TOKEN, safe="")
+        self.assertEqual(_redact(f"a {TOKEN} b {quoted}", TOKEN), "a *** b ***")
 
 
 class TestCloneRepository(unittest.TestCase):
@@ -70,7 +69,8 @@ class TestCloneRepository(unittest.TestCase):
 
         def fake_run(args, cwd, token, check=True):
             calls.append(args[0])
-            if args[0] == "remote":
+            # First origin rewrite on the broken clone fails; later scrub after reclone succeeds.
+            if args[0] == "remote" and calls.count("remote") == 1:
                 raise RuntimeError("git remote failed (exit 128): fatal: detected dubious ownership")
             if args[0] == "clone":
                 (Path(args[-1]) / ".git").mkdir(parents=True)
@@ -81,8 +81,29 @@ class TestCloneRepository(unittest.TestCase):
             (Path(tmp) / "repos/devrev/marina/stale.txt").write_text("x")
             out = clone_repository(Path(tmp), "devrev", "marina", "main", TOKEN, "devrev")
             self.assertFalse((Path(tmp) / "repos/devrev/marina/stale.txt").exists())
-        self.assertEqual(calls, ["remote", "clone", "rev-parse"])
+        self.assertEqual(calls, ["remote", "clone", "remote", "rev-parse"])
         self.assertEqual(out["action"], "cloned")
+
+    def test_clone_uses_authed_url_then_scrubs(self):
+        seen = []
+
+        def fake_run(args, cwd, token, check=True):
+            seen.append(list(args))
+            if args[0] == "clone":
+                (Path(args[-1]) / ".git").mkdir(parents=True)
+            return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, patch("github_fix._run_git", side_effect=fake_run):
+            clone_repository(Path(tmp), "devrev", "marina", "main", TOKEN, "devrev")
+
+        clone_args = next(a for a in seen if a[0] == "clone")
+        self.assertIn(authed_remote("devrev", "marina", TOKEN), clone_args)
+        scrub = next(
+            a
+            for a in seen
+            if a[:3] == ["remote", "set-url", "origin"] and a[3] == public_remote("devrev", "marina")
+        )
+        self.assertTrue(scrub)
 
 
 class TestGithubFixValidation(unittest.TestCase):
@@ -109,14 +130,13 @@ class TestGithubFixValidation(unittest.TestCase):
         self.assertEqual(url, "https://github.com/devrev/wisp.git")
         self.assertNotIn("x-access-token", url)
 
-    def test_git_auth_args_uses_basic_x_access_token(self):
-        args = _git_auth_args("secret-token-value")
-        expected = base64.b64encode(b"x-access-token:secret-token-value").decode()
-        self.assertIn(f"http.extraHeader=Authorization: Basic {expected}", args)
-        self.assertIn("safe.directory=*", args)
-        self.assertIn("credential.helper=", args)
-        self.assertNotIn("secret-token-value", " ".join(args))
-        self.assertNotIn("Bearer", " ".join(args))
+    def test_authed_remote_embeds_token(self):
+        url = authed_remote("devrev", "wisp", "secret-token-value")
+        self.assertEqual(
+            url,
+            "https://x-access-token:secret-token-value@github.com/devrev/wisp.git",
+        )
+        self.assertNotEqual(url, public_remote("devrev", "wisp"))
 
     def test_git_env_disables_terminal_prompt(self):
         env = _git_env()
