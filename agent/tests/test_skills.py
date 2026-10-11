@@ -72,6 +72,7 @@ class TestSkills(unittest.TestCase):
         self.assertIn("github-fix-pr", source)
         self.assertIn("github_clone_repo", source)
         self.assertIn("github_create_fix_pr", source)
+        self.assertIn("edit_workspace_file", source)
         package = (AGENT_DIR.parent / "deploy" / "package.sh").read_text()
         self.assertIn("github_fix.py", package)
 
