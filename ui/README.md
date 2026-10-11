@@ -56,10 +56,23 @@ Secret is stored in Secrets Manager as `cost-agent-ui/api-secret` (created by
 SECRET=$(aws secretsmanager get-secret-value --secret-id cost-agent-ui/api-secret \
   --query SecretString --output text --region us-west-2)
 
+# Chat / streaming (default): AG-UI SSE
 curl -sS -N -X POST 'https://<HttpApiUrl>/invocations' \
   -H 'Content-Type: application/json' \
   -H "X-Cost-Agent-Secret: $SECRET" \
   -d '{"prompt":"hi","session_id":"session-workflow-xxxxxxxxxxxxxxxxx"}'
+
+# Workflows: single JSON body (no SSE parsing)
+curl -sS -X POST 'https://<HttpApiUrl>/invocations' \
+  -H 'Content-Type: application/json' \
+  -H "X-Cost-Agent-Secret: $SECRET" \
+  -d '{"prompt":"hi","session_id":"session-workflow-xxxxxxxxxxxxxxxxx","stream":false}'
+```
+
+JSON mode (`"stream": false` or `"response_format": "json"`) returns:
+
+```json
+{"status_code":200,"session_id":"...","markdown":"Hi! ...","error":null}
 ```
 
 This is a basic shared gate (the browser UI embeds the secret at deploy time).
