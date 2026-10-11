@@ -45,6 +45,14 @@ class TestSkills(unittest.TestCase):
         for name in service_skills():
             self.assertIn(name, source)
 
+    def test_prompt_points_at_cloudwatch_metrics(self):
+        source = AGENT_PY.read_text()
+        self.assertIn("cloudwatch-metrics", source)
+        self.assertIn("cloudwatch_metrics", source)
+        athena = (SKILLS / "cur-athena" / "SKILL.md").read_text()
+        self.assertIn("cloudwatch-metrics", athena)
+        self.assertIn("cloudwatch_metrics", athena)
+
     def test_select_examples_filter_billing_period(self):
         for skill in sorted(SKILLS.glob("*/SKILL.md")):
             for block in re.findall(r"```sql\n(.*?)```", skill.read_text(), re.S):

@@ -49,6 +49,8 @@ at a time. Do not mix services in one query.
 - If a filter on a value from these notes returns nothing, check the real values first with
   `SELECT DISTINCT ... LIMIT 50`. Usage types carry a region prefix (e.g. `USE1-`, `USW2-`),
   so match them with `LIKE '%WriteRequestUnits%'` rather than `=`.
+- CloudWatch daily values are not in this table. Load `cloudwatch-metrics` and query
+  `cloudwatch_metrics` with `billing_period = '2026-10'` when a finding needs a metric.
 
 ## Columns that matter
 

@@ -218,6 +218,7 @@ Bundled today:
 | `cur-lambda` | Lambda: GB-seconds, invocations, provisioned concurrency |
 | `cur-elasticache` | ElastiCache: node-hours by type, replicas, backups |
 | `cur-bedrock` | Bedrock: token types, marketplace model lines, provisioned throughput |
+| `cloudwatch-metrics` | Static October 2026 CloudWatch daily values in the `cloudwatch_metrics` Athena view |
 
 To add a service, create `agent/skills/cur-<service>/SKILL.md` and add its product code to the
 scope table in `cur-athena`.
@@ -259,7 +260,7 @@ The agent attaches Grafana as an MCP server through the DevRev AI gateway
 ## Status
 
 Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool, the CUR
-skills and the Grafana MCP server are in place. No skill or prompt tells the agent when to use the
-Grafana tools yet. Still to add in `agent/agent.py`: `get_cloudwatch` and `describe_resource`.
-Until then the skills tell the agent which CloudWatch metric would confirm a finding and to lower
-its confidence.
+skills, the Grafana MCP server and the `cloudwatch-metrics` skill are in place. October 2026
+daily metrics are the Athena view `cloudwatch_metrics`. No skill or prompt tells the agent when
+to use the Grafana tools yet. Still to add in `agent/agent.py`: a live `get_cloudwatch` tool and
+`describe_resource`.

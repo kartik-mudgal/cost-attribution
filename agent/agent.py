@@ -72,8 +72,9 @@ Keep working notes in the workspace so a later call in the same session can cont
 Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
 Before writing any query, load the cur-athena skill, then the skill for the service
 in scope: cur-sqs, cur-dynamodb, cur-ec2, cur-s3, cur-sns, cur-lambda, cur-elasticache
-or cur-bedrock. Analyse one service at a time. CloudWatch metric names in those skills
-are confirmation targets. You cannot read CloudWatch yet, so do not invent metric values.
+or cur-bedrock. Analyse one service at a time. October 2026 CloudWatch daily values
+are in the Athena view cloudwatch_metrics. Load the cloudwatch-metrics skill before
+using them. Do not invent metric values.
 
 Skills are available via the skills tool — load github-code-lookup when you
 need GitHub access. GitHub tools load a PAT from Secrets Manager for ``devrev``
