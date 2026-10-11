@@ -47,6 +47,10 @@ spec = dict(
         # Short-term conversational turns (AgentCore Memory STM, no LTM strategies).
         "AGENTCORE_MEMORY_ID": "cost_investigator_stm-geZl5e2x3J",
         "AGENTCORE_ACTOR_ID": "cost-investigator",
+        # User downloads. Separate from the code-zip bucket cost-agent-artifacts-*.
+        "ARTIFACT_BUCKET": f"cost-agent-user-artifacts-{ACCOUNT}",
+        "ARTIFACT_PREFIX": "generated",
+        "ARTIFACT_URL_TTL_S": "3600",
     },
     lifecycleConfiguration={"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
 )

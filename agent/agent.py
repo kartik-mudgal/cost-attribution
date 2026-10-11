@@ -22,8 +22,12 @@ cur-lambda, cur-elasticache, cur-bedrock) describes how to query that service.
 
 Grafana is attached as an MCP server through the DevRev AI gateway. Its virtual key
 is read from Secrets Manager (GRAFANA_MCP_SECRET_ARN); the gateway names its tools grafana-*.
+
+User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns a
+presigned download URL for each file.
 """
 import base64
+import contextvars
 import json
 import logging
 import os
@@ -45,6 +49,15 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from bedrock_agentcore.runtime.context import RequestContext
 from strands import Agent, AgentSkills, tool
 from strands.tools.mcp import MCPClient
+
+from artifacts import (
+    DEFAULT_BUCKET,
+    DEFAULT_PREFIX,
+    DEFAULT_URL_TTL_S,
+    format_download_message,
+    publish_workspace_file,
+    safe_session_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +89,21 @@ GRAFANA_MCP_SECRET_ARN = os.environ.get(
     "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
 )
 GRAFANA_MCP_SECRET_JSON_KEY = os.environ.get("GRAFANA_MCP_SECRET_JSON_KEY", "x-litellm-api-key")
+# Dedicated bucket for files the user can download. Not the code-zip bucket.
+ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", DEFAULT_BUCKET)
+ARTIFACT_PREFIX = os.environ.get("ARTIFACT_PREFIX", DEFAULT_PREFIX)
+ARTIFACT_URL_TTL_S = int(os.environ.get("ARTIFACT_URL_TTL_S", str(DEFAULT_URL_TTL_S)))
+_s3 = boto3.client("s3", region_name=AWS_REGION)
+_artifact_session: contextvars.ContextVar[str] = contextvars.ContextVar("artifact_session", default="unknown-session")
 
 SYSTEM_PROMPT = f"""You investigate AWS cost changes for SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda, ElastiCache and Bedrock.
 Use only numbers returned by tools or present in the case. Never invent figures.
 Keep working notes in the workspace so a later call in the same session can continue.
+
+Every artifact you generate for the user (report, CSV or JSON export, HTML, chart,
+investigation write-up) must be stored for download. Write the file in the workspace,
+then call publish_artifact with its workspace path. Include each download_url in the
+answer and say that it expires after expires_in_seconds. Never invent a download URL.
 
 Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
 Before writing any query, load the cur-athena skill, then the skill for the service
@@ -220,11 +244,39 @@ def read_workspace_file(name: str) -> str:
 
 @tool
 def write_workspace_file(name: str, content: str) -> str:
-    """Write a file to the session workspace (e.g. notes, intermediate results)."""
+    """Write a file to the session workspace (e.g. notes, intermediate results).
+
+    User-facing artifacts must also be passed to publish_artifact.
+    """
     path = _safe_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return f"wrote {len(content)} bytes to {name}"
+
+
+@tool
+def publish_artifact(name: str) -> str:
+    """Upload a workspace file to the artifact bucket and return a presigned download URL.
+
+    Call this for every artifact the user should keep. Include download_url in the answer.
+    The link expires after expires_in_seconds (sooner if the signing credentials expire).
+
+    Args:
+        name: Workspace-relative path, for example artifacts/sqs-report.md.
+    """
+    try:
+        result = publish_workspace_file(
+            workspace=WORKSPACE,
+            name=name,
+            session_id=_artifact_session.get(),
+            s3_client=_s3,
+            bucket=ARTIFACT_BUCKET,
+            prefix=ARTIFACT_PREFIX,
+            ttl_s=ARTIFACT_URL_TTL_S,
+        )
+    except (ValueError, FileNotFoundError, OSError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result)
 
 
 @tool
@@ -433,6 +485,7 @@ TOOLS = [
     list_workspace,
     read_workspace_file,
     write_workspace_file,
+    publish_artifact,
     athena_query,
     github_search_code,
     github_get_file,
@@ -518,6 +571,25 @@ def _memory_session_manager(
     return AgentCoreMemorySessionManager(config, region_name=AWS_REGION)
 
 
+def _bind_artifact_session(session_id: str) -> None:
+    """Scope artifact object keys to this Runtime session."""
+    _artifact_session.set(safe_session_id(session_id))
+
+
+def _text_events(text: str) -> list[dict]:
+    message_id = str(uuid.uuid4())
+    return [
+        _agui_event("TEXT_MESSAGE_START", messageId=message_id, role="assistant"),
+        _agui_event("TEXT_MESSAGE_CONTENT", messageId=message_id, delta=text),
+        _agui_event("TEXT_MESSAGE_END", messageId=message_id),
+    ]
+
+
+def _collect_download(parsed: Any, downloads: list[dict]) -> None:
+    if isinstance(parsed, dict) and parsed.get("download_url"):
+        downloads.append(parsed)
+
+
 def _build_agent(session_manager: AgentCoreMemorySessionManager | None = None) -> Agent:
     grafana = _grafana_mcp()
     kwargs: dict[str, Any] = {
@@ -538,6 +610,7 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     session_id = _session_id(payload, context)
     actor_id = _actor_id(payload)
     run_id = str(uuid.uuid4())
+    _bind_artifact_session(session_id)
     session_manager = _memory_session_manager(session_id, actor_id)
     agent = _build_agent(session_manager=session_manager)
 
@@ -558,6 +631,7 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     active_tool_call_id: str | None = None
     seen_tool_args: dict[str, str] = {}
     tools_invoked: list[str] = []
+    downloads: list[dict] = []
 
     try:
         async for event in agent.stream_async(prompt):
@@ -621,12 +695,18 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
                     if active_tool_call_id == tu_id:
                         yield _agui_event("TOOL_CALL_END", toolCallId=tu_id)
                         active_tool_call_id = None
+                    _collect_download(parsed, downloads)
                     yield _agui_event("TOOL_CALL_RESULT", toolCallId=tu_id, result=parsed)
 
         if active_tool_call_id is not None:
             yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
         if active_text_msg_id is not None:
             yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
+
+        download_text = format_download_message(downloads)
+        if download_text:
+            for event in _text_events(download_text):
+                yield event
 
         yield _agui_event(
             "STATE_DELTA",
@@ -638,6 +718,14 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
         )
         yield _agui_event("RUN_FINISHED", runId=run_id)
     except Exception as e:
+        if active_tool_call_id is not None:
+            yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
+        if active_text_msg_id is not None:
+            yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
+        download_text = format_download_message(downloads)
+        if download_text:
+            for event in _text_events(download_text):
+                yield event
         yield _agui_event(
             "RUN_ERROR",
             runId=run_id,
