@@ -20,6 +20,12 @@
       "Resource": "arn:aws:s3:::cost-agent-artifacts-270149200236/*"
     },
     {
+      "Sid": "UserArtifacts",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::cost-agent-user-artifacts-270149200236/*"
+    },
+    {
       "Sid": "Logs",
       "Effect": "Allow",
       "Action": [

@@ -13,6 +13,7 @@ and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persisten
 ```
 agent/
   agent.py            Agent code and AgentCore entrypoint
+  artifacts.py        Uploads user-facing files to S3 and signs a download URL
   requirements.txt    Python dependencies
   skills/             Strands Agent Skills (SKILL.md packages), bundled into the runtime zip
 deploy/
@@ -55,6 +56,7 @@ You only need this if the S3 bucket and IAM role don't exist yet.
 export AWS_PROFILE=hackathon
 
 aws s3 mb s3://cost-agent-artifacts-270149200236 --region us-west-2
+aws s3 mb s3://cost-agent-user-artifacts-270149200236 --region us-west-2
 
 aws iam create-role --role-name cost-agent-runtime-role \
   --assume-role-policy-document file://deploy/trust.json
@@ -136,7 +138,8 @@ uv run --with boto3 python deploy/deploy_runtime.py
 ```
 
 `package.sh` uses the `BUCKET` and `KEY` environment variables if they are set, so you can upload
-somewhere else without editing the script.
+somewhere else without editing the script. That bucket holds the code zip only. Files the agent
+generates for users go to `cost-agent-user-artifacts-270149200236` (see below).
 
 ### CI deploy (merge to main)
 
@@ -208,6 +211,25 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | `GRAFANA_MCP_URL` | `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp` | Grafana MCP server (streamable HTTP). Empty disables it |
 | `GRAFANA_MCP_SECRET_ARN` | `grafana-mcp` secret | Secrets Manager ARN for the AI gateway virtual key |
 | `GRAFANA_MCP_SECRET_JSON_KEY` | `x-litellm-api-key` | JSON key inside that secret |
+| `ARTIFACT_BUCKET` | `cost-agent-user-artifacts-270149200236` | Dedicated bucket for files the user can download |
+| `ARTIFACT_PREFIX` | `generated` | Key prefix inside that bucket |
+| `ARTIFACT_URL_TTL_S` | `3600` | Presigned URL lifetime in seconds (60 to 604800) |
+
+## Artifact downloads
+
+When the agent writes something the user should keep (a report, CSV or JSON export, HTML,
+chart, or investigation write-up), it saves the file in the session workspace and calls
+`publish_artifact`. That tool uploads the file to
+`s3://cost-agent-user-artifacts-270149200236/generated/<session-id>/<path>` and returns a
+presigned GET URL. The answer includes that URL, and the run also appends an "Artifact
+downloads" message so the link is in the response even if the model skips it.
+
+The bucket stays private. Anyone with the URL can download the object until the URL expires
+(one hour by default). The link also dies when the runtime role credentials that signed it
+expire, if that happens first. Create the bucket with the one-time `aws s3 mb` command above
+before the first publish. The runtime role needs `s3:PutObject` and `s3:GetObject` on
+`arn:aws:s3:::cost-agent-user-artifacts-270149200236/*` (`UserArtifacts` in
+`deploy/role-policy.json`).
 
 ## Athena query tool
 
@@ -283,7 +305,8 @@ The agent attaches Grafana as an MCP server through the DevRev AI gateway
 ## Status
 
 Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool, the CUR
-skills, the Grafana MCP server and the `cloudwatch-metrics` skill are in place. October 2026
+skills, the Grafana MCP server, the `cloudwatch-metrics` skill, and `publish_artifact`
+(presigned download URLs) are in place. October 2026
 daily metrics are the Athena view `cloudwatch_metrics`. No skill or prompt tells the agent when
 to use the Grafana tools yet. Still to add in `agent/agent.py`: a live `get_cloudwatch` tool and
 `describe_resource`.

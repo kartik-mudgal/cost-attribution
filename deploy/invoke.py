@@ -68,6 +68,9 @@ for line in lines:
         print(f"\n[tool] {event.get('toolName')} ({event.get('toolCallId')})")
     elif etype == "TOOL_CALL_RESULT":
         result = event.get("result")
+        if isinstance(result, dict) and result.get("download_url"):
+            print(f"[download] {result['download_url']}")
+            print(f"[download] expires in {result.get('expires_in_seconds')} seconds")
         preview = json.dumps(result) if not isinstance(result, str) else result
         if len(preview) > 240:
             preview = preview[:240] + "…"
