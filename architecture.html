@@ -98,26 +98,26 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
   <div class="phase-head">
     <span class="stage">Implemented · Daily cost report</span>
     <h2>End-to-end: CUR → DevRev workflow → agent → Slack</h2>
-    <p>Production-shaped demo path: billing data lands in S3, a scheduled DevRev workflow starts an async AgentCore session, and the finished markdown report is delivered through a webhook into Slack.</p>
+    <p>Each day: fresh billing data in AWS, DevRev starts the cost agent, the agent writes a report and hands it back, DevRev shares it in Slack.</p>
   </div>
   <div class="canvas"><div class="flow">
     <div class="row">
-      <div class="box aws"><span class="k">AWS Billing</span><b>CUR export schedule</b><small>Refreshes CUR 2.0 Parquet in S3 up to several times per day; treat as the daily billing snapshot</small></div>
-      <div class="box aws store"><span class="k">S3</span><b>CUR Parquet</b><small>Resource IDs, hourly rows → Glue <code>hackathon_cur.cost_report</code></small></div>
-      <div class="box aws store"><span class="k">S3</span><b>CloudWatch Parquet (demo)</b><small>October 2026 scrape → view <code>cloudwatch_metrics</code></small></div>
+      <div class="box aws"><span class="k">AWS Billing</span><b>Daily export</b><small>Updated cost lines land in storage on a schedule</small></div>
+      <div class="box aws store"><span class="k">Storage</span><b>Cost data</b><small>Line-item spend the agent can query</small></div>
+      <div class="box aws store"><span class="k">Storage</span><b>Usage metrics (demo)</b><small>Fixed snapshot so spend can be compared to traffic</small></div>
     </div>
-    <div class="arrow"><span>Athena workgroup cost-agent</span></div>
-    <div class="box aws store"><span class="k">Athena</span><b>Read-only SQL</b><small><code>athena_query</code> in the agent; CUR + static metrics, no live CloudWatch API</small></div>
-    <div class="arrow"><span>schedule · daily</span></div>
+    <div class="arrow"><span>agent queries (read only)</span></div>
+    <div class="box aws store"><span class="k">Query service</span><b>Costs and metrics</b><small>One place to ask questions about billing and usage</small></div>
+    <div class="arrow"><span>once per day</span></div>
     <div class="frame dr"><span class="tag">DevRev · scheduled workflow</span>
-      <div class="box devrev"><span class="k">1</span><b>Start agent session</b><small>POST invocations with <code>async: true</code>, prompt, <code>webhook_url</code>, stable <code>session_id</code></small></div>
-      <div class="arrow"><span>202 accepted</span></div>
-      <div class="box agent"><span class="k">AgentCore Runtime</span><b>Cost investigator</b><small>Strands + Claude on Bedrock; skills on demand; optional Grafana MCP via AI gateway</small></div>
-      <div class="arrow"><span>post_async_webhook</span></div>
-      <div class="box devrev"><span class="k">2</span><b>Webhook handler</b><small>JSON <code>{"session_id","body"}</code> with full report markdown</small></div>
+      <div class="box devrev"><span class="k">1</span><b>Start analysis</b><small>Send today's prompt; run the agent in the background; remember where to send the answer</small></div>
+      <div class="arrow"><span>working…</span></div>
+      <div class="box agent"><span class="k">Agent</span><b>Cost investigator</b><small>Reads data, follows playbooks, may check code and optional app metrics</small></div>
+      <div class="arrow"><span>report ready</span></div>
+      <div class="box devrev"><span class="k">2</span><b>Receive report</b><small>Workflow gets the full markdown write-up from the agent</small></div>
     </div>
-    <div class="arrow"><span>post message</span></div>
-    <div class="box out"><span class="k">Slack</span><b>Channel digest</b><small>Daily AWS cost analysis report (+ presigned artifact links when published)</small></div>
+    <div class="arrow"><span>share</span></div>
+    <div class="box out"><span class="k">Slack</span><b>Team channel</b><small>Daily cost summary and links to any attached files</small></div>
   </div></div>
 
   <div class="tbl"><table>
@@ -131,7 +131,7 @@ footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padd
       <tr><td><code>github-fix-pr</code></td><td>Optional: open <code>cost-fix/*</code> PRs when a fix is approved</td></tr>
     </tbody>
   </table></div>
-  <p style="color:var(--muted);font-size:.9rem;margin:0">Narrative and Mermaid diagrams: <code>README.md</code> · <code>ui/README.md</code> (invoke + webhook)</p>
+  <p style="color:var(--muted);font-size:.9rem;margin:0">Mermaid version: <code>README.md</code> · API details: <code>ui/README.md</code></p>
 </section>
 
 <div class="divider"></div>
