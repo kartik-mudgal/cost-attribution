@@ -40,6 +40,31 @@ ALLOWED_CIDR=203.0.113.10/32 STACK_NAME=cost-agent-ui ./ui/deploy.sh
 First create takes ~5 minutes (CloudFront). The script prints the Frontend URL.
 Re-run to update the proxy zip, Lambda env, and `index.html`.
 
+## API auth (required)
+
+The HTTP/WebSocket proxy requires a shared secret:
+
+| Transport | How to send |
+| --- | --- |
+| HTTP | Header `X-Cost-Agent-Secret: <secret>` (or `Authorization: Bearer <secret>`) |
+| WebSocket | JSON field `api_secret` on each message |
+
+Secret is stored in Secrets Manager as `cost-agent-ui/api-secret` (created by
+`./ui/deploy.sh`). Optional override: env / GitHub secret `COST_AGENT_API_SECRET`.
+
+```bash
+SECRET=$(aws secretsmanager get-secret-value --secret-id cost-agent-ui/api-secret \
+  --query SecretString --output text --region us-west-2)
+
+curl -sS -N -X POST 'https://<HttpApiUrl>/invocations' \
+  -H 'Content-Type: application/json' \
+  -H "X-Cost-Agent-Secret: $SECRET" \
+  -d '{"prompt":"hi","session_id":"session-workflow-xxxxxxxxxxxxxxxxx"}'
+```
+
+This is a basic shared gate (the browser UI embeds the secret at deploy time).
+It stops casual anonymous abuse; it is not per-user auth.
+
 ## Notes
 
 - AgentCore Runtime does not expose a chat-history API. Short-term turns are

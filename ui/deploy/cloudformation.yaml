@@ -272,7 +272,7 @@ Resources:
       CorsConfiguration:
         AllowOrigins: ['*']
         AllowMethods: [POST, OPTIONS]
-        AllowHeaders: ['Content-Type']
+        AllowHeaders: ['Content-Type', 'X-Cost-Agent-Secret', 'Authorization']
       Tags:
         project: !Ref EnvironmentName
 
