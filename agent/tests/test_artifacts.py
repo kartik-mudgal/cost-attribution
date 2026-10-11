@@ -246,6 +246,7 @@ class TestWiring(unittest.TestCase):
         self.assertIn('"$ROOT/agent/artifacts.py"', source)
         self.assertIn('"$ROOT/agent/github_fix.py"', source)
         self.assertIn('"$ROOT/agent/report_html.py"', source)
+        self.assertIn('"$ROOT/agent/report_charts.py"', source)
         self.assertIn("markdown-it-py", (REPO_ROOT / "agent" / "requirements.txt").read_text())
 
 

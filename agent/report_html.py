@@ -9,6 +9,8 @@ from html import escape
 
 from markdown_it import MarkdownIt
 
+from report_charts import CHART_CSS, chart_for_table, extract_tables
+
 VERDICTS = {
     "Action recommended": "action",
     "Anomaly confirmed": "alert",
@@ -68,7 +70,7 @@ header { margin-bottom: 40px; }
 .verdict.action { border-color: var(--action); color: var(--action); }
 .verdict.alert { border-color: var(--alert); color: var(--alert); }
 main > * { max-width: 72ch; }
-main > .table-wrap, main > pre { max-width: none; }
+main > .table-wrap, main > pre, main > .chart { max-width: none; }
 h1, h2, h3, h4 { line-height: 1.3; margin: 1.6em 0 0.5em; }
 h1 { font-size: 1.6rem; }
 h2 { font-size: 1.35rem; margin-top: 1.4em; padding-top: 1em; border-top: 1px solid var(--rule); }
@@ -132,8 +134,15 @@ def render_report(markdown_text: str, name: str, generated_at: datetime | None =
     verdict = report_verdict(markdown_text)
     if verdict:
         body_md = _VERDICT_LINE.sub("", body_md, count=1)
-    body = _MD.render(body_md)
-    body = body.replace("<table>", '<div class="table-wrap"><table>').replace("</table>", "</table></div>")
+    tokens = _MD.parse(body_md)
+    charts = [chart_for_table(rows) for rows in extract_tables(tokens)]
+    body = _MD.renderer.render(tokens, _MD.options, {})
+    pieces = body.split("<table>")
+    body = pieces[0] + "".join(
+        f'{charts[i] if i < len(charts) else ""}<div class="table-wrap"><table>{piece}'
+        for i, piece in enumerate(pieces[1:])
+    )
+    body = body.replace("</table>", "</table></div>")
     verdict_html = (
         f'<p class="verdict {verdict[1]}" role="status">{escape(verdict[0])}</p>' if verdict else ""
     )
@@ -145,7 +154,7 @@ def render_report(markdown_text: str, name: str, generated_at: datetime | None =
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:">
 <title>{escape(title.replace("`", ""))}</title>
-<style>{CSS}</style>
+<style>{CSS}{CHART_CSS}</style>
 </head>
 <body>
 <div class="page">
