@@ -159,7 +159,10 @@ Resources:
         Statement:
           - Effect: Allow
             Action:
+              # Both required when InvokeAgentRuntime sends runtimeUserId /
+              # X-Amzn-Bedrock-AgentCore-Runtime-User-Id.
               - bedrock-agentcore:InvokeAgentRuntime
+              - bedrock-agentcore:InvokeAgentRuntimeForUser
               - bedrock:InvokeAgent
             Resource: '*'
           - Effect: Allow

@@ -1,5 +1,6 @@
-# Deploy the AgentCore runtime when agent/deploy code lands on main.
+# Deploy the AgentCore runtime and (optionally) the AG-UI CloudFront stack on main.
 # Required repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Optional repo variable: UI_ALLOWED_CIDR (e.g. 203.0.113.10/32). Default 0.0.0.0/0.
 name: Deploy AgentCore
 
 on:
@@ -8,8 +9,18 @@ on:
     paths:
       - "agent/**"
       - "deploy/**"
+      - "ui/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
+    inputs:
+      deploy_agent:
+        description: "Package and update AgentCore runtime"
+        type: boolean
+        default: true
+      deploy_ui:
+        description: "Deploy/update CloudFormation chat UI"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -24,14 +35,55 @@ jobs:
     env:
       AWS_REGION: us-west-2
       AWS_DEFAULT_REGION: us-west-2
+      STACK_NAME: cost-agent-ui
+      # Prefer repo variable; fall back to open access (do not lock to the runner IP).
+      # Public by default; set repo variable UI_ALLOWED_CIDR to a /32 to lock CloudFront.
+      ALLOWED_CIDR: ${{ vars.UI_ALLOWED_CIDR || '0.0.0.0/0' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect changed paths
+        id: changes
+        if: github.event_name == 'push'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            agent:
+              - 'agent/**'
+              - 'deploy/**'
+              - '.github/workflows/deploy.yml'
+            ui:
+              - 'ui/**'
+              - '.github/workflows/deploy.yml'
+
+      - name: Decide what to deploy
+        id: plan
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "agent=${{ inputs.deploy_agent }}" >> "$GITHUB_OUTPUT"
+            echo "ui=${{ inputs.deploy_ui }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "agent=${{ steps.changes.outputs.agent }}" >> "$GITHUB_OUTPUT"
+            # Always refresh UI when the agent runtime is redeployed so ARN/env stay aligned.
+            if [[ "${{ steps.changes.outputs.agent }}" == "true" || "${{ steps.changes.outputs.ui }}" == "true" ]]; then
+              echo "ui=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "ui=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Install uv
+        if: steps.plan.outputs.agent == 'true'
         uses: astral-sh/setup-uv@v5
         with:
           version: "0.8.15"
+
+      - name: Setup Node.js
+        if: steps.plan.outputs.ui == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -42,6 +94,7 @@ jobs:
 
       # Idempotent: overwrites the inline policy; unchanged JSON is a no-op for permissions.
       - name: Apply runtime IAM role policy
+        if: steps.plan.outputs.agent == 'true'
         run: |
           aws iam put-role-policy \
             --role-name cost-agent-runtime-role \
@@ -49,7 +102,13 @@ jobs:
             --policy-document file://deploy/role-policy.json
 
       - name: Package and upload agent zip
+        if: steps.plan.outputs.agent == 'true'
         run: ./deploy/package.sh
 
       - name: Create or update AgentCore runtime
+        if: steps.plan.outputs.agent == 'true'
         run: uv run --with boto3 python deploy/deploy_runtime.py
+
+      - name: Deploy chat UI (CloudFormation)
+        if: steps.plan.outputs.ui == 'true'
+        run: ./ui/deploy.sh
