@@ -225,11 +225,6 @@ class TestWiring(unittest.TestCase):
         source = (REPO_ROOT / "deploy" / "package.sh").read_text()
         self.assertIn('"$ROOT/agent/artifacts.py"', source)
         self.assertIn('"$ROOT/agent/github_fix.py"', source)
-        self.assertIn("bundle_gh.sh", source)
-
-    def test_runtime_path_includes_bundled_bin(self):
-        source = (REPO_ROOT / "deploy" / "deploy_runtime.py").read_text()
-        self.assertIn('"/var/task/bin', source)
 
 
 if __name__ == "__main__":

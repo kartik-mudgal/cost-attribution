@@ -27,8 +27,6 @@ spec = dict(
     networkConfiguration={"networkMode": "PUBLIC"},
     filesystemConfigurations=[{"sessionStorage": {"mountPath": "/mnt/workspace"}}],
     environmentVariables={
-        # AgentCore mounts the code zip at /var/task; bundle_gh.sh installs bin/gh there.
-        "PATH": "/var/task/bin:/usr/local/bin:/usr/bin:/bin",
         "WORKSPACE_DIR": "/mnt/workspace",
         "MODEL_ID": "us.anthropic.claude-sonnet-5",
         "MAX_OUTPUT_TOKENS": "16000",
