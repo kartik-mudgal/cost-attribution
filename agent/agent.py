@@ -29,6 +29,8 @@ presigned download URL for each file.
 
 With github-fix-pr, the agent may clone devrev repos under workspace/repos/ and open fix PRs
 via github_clone_repo and github_create_fix_pr (git must be on the runtime PATH).
+
+DevRev issues use devrev_create_issue with a PAT from Secrets Manager (DEVREV_PAT_SECRET_ARN).
 """
 import base64
 import contextvars
@@ -65,6 +67,7 @@ from artifacts import (
     publish_workspace_file,
     safe_session_id,
 )
+from devrev_issues import create_issue as devrev_create_work
 from github_fix import clone_repository, create_fix_pull_request
 
 logger = logging.getLogger(__name__)
@@ -99,6 +102,37 @@ GRAFANA_MCP_SECRET_ARN = os.environ.get(
     "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
 )
 GRAFANA_MCP_SECRET_JSON_KEY = os.environ.get("GRAFANA_MCP_SECRET_JSON_KEY", "x-litellm-api-key")
+DEVREV_API_BASE = os.environ.get("DEVREV_API_BASE", "https://app.devrev.ai/api/gateway/internal")
+DEVREV_PAT_SECRET_ARN = os.environ.get(
+    "DEVREV_PAT_SECRET_ARN",
+    "arn:aws:secretsmanager:us-west-2:270149200236:secret:cost-agent-devrev-pat",
+)
+DEVREV_PAT_SECRET_JSON_KEY = os.environ.get("DEVREV_PAT_SECRET_JSON_KEY", "pat")
+DEVREV_ISSUE_APPLIES_TO_PART = os.environ.get(
+    "DEVREV_ISSUE_APPLIES_TO_PART",
+    "don:core:dvrv-us-1:devo/0:feature/2971",
+)
+DEVREV_ISSUE_OWNED_BY = [
+    x.strip()
+    for x in os.environ.get(
+        "DEVREV_ISSUE_OWNED_BY",
+        "don:identity:dvrv-us-1:devo/0:svcacc/273",
+    ).split(",")
+    if x.strip()
+]
+DEVREV_ISSUE_SPACE = os.environ.get(
+    "DEVREV_ISSUE_SPACE",
+    "don:identity:dvrv-us-1:devo/0:space/17H9CvPAF",
+)
+DEVREV_ISSUE_TAG_ID = os.environ.get(
+    "DEVREV_ISSUE_TAG_ID",
+    "don:core:dvrv-us-1:devo/0:tag/191028",
+)
+DEVREV_ISSUE_STAGE_ID = os.environ.get(
+    "DEVREV_ISSUE_STAGE_ID",
+    "don:core:dvrv-us-1:devo/0:custom_stage/16",
+)
+DEVREV_ISSUE_PRIORITY = int(os.environ.get("DEVREV_ISSUE_PRIORITY", "3"))
 # Dedicated bucket for files the user can download. Not the code-zip bucket.
 ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", DEFAULT_BUCKET)
 ARTIFACT_PREFIX = os.environ.get("ARTIFACT_PREFIX", DEFAULT_PREFIX)
@@ -118,6 +152,8 @@ RULES FOR EVERY REQUEST
 - AWS is read-only. Never create, change or delete anything in AWS.
 - GitHub writes are allowed only when you load github-fix-pr and the user asked for a code fix
   or explicitly approved opening a PR; use github_clone_repo and github_create_fix_pr only then.
+- DevRev writes are allowed only when you load devrev-issue and the user asked to file an issue
+  or agreed after you proposed one; use devrev_create_issue only then.
 - Keep working notes in the workspace so a later call in the same session can continue.
 
 DATA
@@ -133,6 +169,8 @@ DATA
   service env values.yaml path.
 - Fix PRs: load github-fix-pr to clone a repo, edit under workspace/repos/, then open a PR with
   github_create_fix_pr (branch must be cost-fix/<slug>).
+- DevRev issues: load devrev-issue and call devrev_create_issue(title, body) to file a finding;
+  part, team, space, tag and stage are fixed by the tool.
 - Limits, to state whenever they affect a conclusion: CUR covers 2026-10-01 to 2026-10-10 and
   the last day is partial, so the newest settled day is 2026-10-08. There is no earlier
   month, so baselines are at most 7 days. Metrics are daily, so a cost jump can be timed to
@@ -205,6 +243,7 @@ _athena = boto3.client("athena", region_name=ATHENA_REGION)
 _secrets = boto3.client("secretsmanager", region_name=AWS_REGION)
 _github_pat_cache: str | None = None
 _grafana_key_cache: str | None = None
+_devrev_pat_cache: str | None = None
 
 
 def _skills_plugin() -> AgentSkills:
@@ -249,6 +288,36 @@ def _github_pat() -> str:
     if not token:
         raise RuntimeError(f"empty GitHub PAT in secret {GITHUB_PAT_SECRET_ARN!r}")
     _github_pat_cache = token
+    return token
+
+
+def _devrev_pat() -> str:
+    """Fetch the DevRev PAT from Secrets Manager (cached for the process)."""
+    global _devrev_pat_cache
+    if _devrev_pat_cache:
+        return _devrev_pat_cache
+    resp = _secrets.get_secret_value(SecretId=DEVREV_PAT_SECRET_ARN)
+    raw = resp.get("SecretString") or ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        token = (
+            payload.get(DEVREV_PAT_SECRET_JSON_KEY)
+            or payload.get("pat")
+            or payload.get("token")
+            or payload.get("api_key_value")
+        )
+        if not token:
+            raise RuntimeError(
+                f"secret {DEVREV_PAT_SECRET_ARN!r} JSON missing key {DEVREV_PAT_SECRET_JSON_KEY!r}"
+            )
+    else:
+        token = raw.strip()
+    if not token:
+        raise RuntimeError(f"empty DevRev PAT in secret {DEVREV_PAT_SECRET_ARN!r}")
+    _devrev_pat_cache = token
     return token
 
 
@@ -639,6 +708,35 @@ def github_create_fix_pr(
     return json.dumps(result, indent=2)
 
 
+@tool
+def devrev_create_issue(title: str, body: str) -> str:
+    """Create a DevRev issue for a cost finding (fixed part, team, space, tag, stage).
+
+    Load the devrev-issue skill first. Only title and body are sent; routing fields are
+    configured on the runtime. Returns display_id and url on success.
+
+    Args:
+        title: Short issue title.
+        body: Markdown description with evidence, query IDs, and recommended fix.
+    """
+    try:
+        result = devrev_create_work(
+            title,
+            body,
+            _devrev_pat(),
+            api_base=DEVREV_API_BASE,
+            applies_to_part=DEVREV_ISSUE_APPLIES_TO_PART,
+            owned_by=DEVREV_ISSUE_OWNED_BY,
+            space=DEVREV_ISSUE_SPACE,
+            tag_id=DEVREV_ISSUE_TAG_ID,
+            stage_id=DEVREV_ISSUE_STAGE_ID,
+            priority=DEVREV_ISSUE_PRIORITY,
+        )
+    except (ValueError, RuntimeError) as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(result, indent=2)
+
+
 def _check_sql(sql: str) -> str:
     """Return the SQL to run, or raise ValueError if it isn't a single read-only query."""
     body = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
@@ -738,6 +836,7 @@ TOOLS = [
     github_list_pull_requests,
     github_clone_repo,
     github_create_fix_pr,
+    devrev_create_issue,
 ]
 
 

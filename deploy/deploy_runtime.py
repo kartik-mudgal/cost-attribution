@@ -15,6 +15,12 @@ BUCKET = f"cost-agent-artifacts-{ACCOUNT}"
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/cost-agent-runtime-role"
 KEY = (pathlib.Path(__file__).parent / "build" / "last_key").read_text().strip()
 
+_build = pathlib.Path(__file__).parent / "build"
+_devrev_secret_arn = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:cost-agent-devrev-pat"
+_devrev_meta = _build / "devrev-secret.json"
+if _devrev_meta.is_file():
+    _devrev_secret_arn = json.loads(_devrev_meta.read_text()).get("secret_arn", _devrev_secret_arn)
+
 ctl = boto3.client("bedrock-agentcore-control", region_name=REGION)
 
 spec = dict(
@@ -53,6 +59,14 @@ spec = dict(
         "ARTIFACT_BUCKET": f"cost-agent-user-artifacts-{ACCOUNT}",
         "ARTIFACT_PREFIX": "generated",
         "ARTIFACT_URL_TTL_S": "3600",
+        "DEVREV_PAT_SECRET_ARN": _devrev_secret_arn,
+        "DEVREV_PAT_SECRET_JSON_KEY": "pat",
+        "DEVREV_ISSUE_APPLIES_TO_PART": "don:core:dvrv-us-1:devo/0:feature/2971",
+        "DEVREV_ISSUE_OWNED_BY": "don:identity:dvrv-us-1:devo/0:svcacc/273",
+        "DEVREV_ISSUE_SPACE": "don:identity:dvrv-us-1:devo/0:space/17H9CvPAF",
+        "DEVREV_ISSUE_TAG_ID": "don:core:dvrv-us-1:devo/0:tag/191028",
+        "DEVREV_ISSUE_STAGE_ID": "don:core:dvrv-us-1:devo/0:custom_stage/16",
+        "DEVREV_ISSUE_PRIORITY": "3",
     },
     lifecycleConfiguration={"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
 )
