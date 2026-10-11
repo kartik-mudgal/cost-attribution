@@ -59,7 +59,8 @@
       "Action": [
         "bedrock-agentcore:GetWorkloadAccessToken",
         "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
-        "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+        "bedrock-agentcore:CreateWorkloadIdentity"
       ],
       "Resource": [
         "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default",
