@@ -199,7 +199,7 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | --- | --- | --- |
 | `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
 | `MODEL_ID` | `us.anthropic.claude-sonnet-5` | Bedrock model or inference profile |
-| `MAX_OUTPUT_TOKENS` | `16000` | Max tokens in one model response, including a report written via `write_workspace_file` |
+| `MAX_OUTPUT_TOKENS` | `16000` | Max tokens in one model response. A report is several `append_workspace_file` calls, one section each |
 | `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
 | `GITHUB_PAT_SECRET_ARN` | AgentCore-managed `github-pat` secret | Secrets Manager ARN for the GitHub PAT |
 | `GITHUB_PAT_SECRET_JSON_KEY` | `api_key_value` | JSON key inside that secret |
@@ -219,8 +219,10 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 ## Artifact downloads
 
 When the agent writes something the user should keep (a report, CSV or JSON export, HTML,
-chart, or investigation write-up), it saves the file in the session workspace and calls
-`publish_artifact`. That tool uploads the file to
+chart, or investigation write-up), it builds the file one section at a time with
+`append_workspace_file`, then calls `publish_artifact`. A response that hits the output
+limit continues automatically, up to three more times, and appends the remaining sections.
+`publish_artifact` uploads the file to
 `s3://cost-agent-user-artifacts-270149200236/generated/<session-id>/<path>` and returns a
 presigned GET URL. The answer includes that URL, and the run also appends an "Artifact
 downloads" message so the link is in the response even if the model skips it.
