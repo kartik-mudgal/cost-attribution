@@ -294,21 +294,61 @@ async function handleHTTP(event) {
   }
 
   const sessionId = sessionIdFrom(body);
+  // Workflows: {"stream": false} or {"response_format": "json"} → single JSON body.
+  // Chat UI keeps default SSE (stream omitted / true).
+  const wantJson =
+    body.stream === false ||
+    body.response_format === "json" ||
+    String(headerGet(event.headers || {}, "accept")).includes("application/json");
+
   const events = [];
+  const textParts = [];
+  let runError = null;
   try {
     await invokeAgent(
       { prompt, sessionId, actorId: actorIdFrom(body) },
       async (agEvent) => {
+        if (wantJson) {
+          if (agEvent?.type === "TEXT_MESSAGE_CONTENT" && agEvent.delta) {
+            textParts.push(String(agEvent.delta));
+          } else if (agEvent?.type === "RUN_ERROR") {
+            runError = agEvent.error || { message: "agent error" };
+          }
+          return;
+        }
         events.push(`data: ${JSON.stringify(agEvent)}\n\n`);
       }
     );
   } catch (err) {
-    events.push(
-      `data: ${JSON.stringify({
-        type: "RUN_ERROR",
-        error: { code: "AGENT_INVOKE_ERROR", message: err.message || String(err) },
-      })}\n\n`
-    );
+    if (wantJson) {
+      runError = { code: "AGENT_INVOKE_ERROR", message: err.message || String(err) };
+    } else {
+      events.push(
+        `data: ${JSON.stringify({
+          type: "RUN_ERROR",
+          error: { code: "AGENT_INVOKE_ERROR", message: err.message || String(err) },
+        })}\n\n`
+      );
+    }
+  }
+
+  if (wantJson) {
+    const markdown = textParts.join("");
+    const ok = !runError && markdown.length > 0;
+    return {
+      statusCode: ok ? 200 : runError ? 502 : 200,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Thread-Id": sessionId,
+        ...CORS_HEADERS,
+      },
+      body: JSON.stringify({
+        status_code: ok ? 200 : runError ? 502 : 200,
+        session_id: sessionId,
+        markdown,
+        error: runError,
+      }),
+    };
   }
 
   return {
