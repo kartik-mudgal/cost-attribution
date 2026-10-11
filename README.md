@@ -59,7 +59,7 @@ aws s3 mb s3://cost-agent-artifacts-270149200236 --region us-west-2
 aws iam create-role --role-name cost-agent-runtime-role \
   --assume-role-policy-document file://deploy/trust.json
 aws iam put-role-policy --role-name cost-agent-runtime-role \
-  --policy-name cost-agent-runtime \
+  --policy-name runtime \
   --policy-document file://deploy/role-policy.json
 ```
 
