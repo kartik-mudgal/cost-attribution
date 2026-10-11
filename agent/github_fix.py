@@ -2,14 +2,18 @@
 
 import base64
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("github_fix")
 
 CLONE_DIR = "repos"
 BRANCH_PATTERN = re.compile(r"^cost-fix/[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
@@ -44,8 +48,17 @@ def _git_auth_args(token: str) -> list[str]:
     GitHub's git smart-HTTP endpoints reject Bearer; they require
     Basic base64(x-access-token:<pat>). REST API calls still use Bearer separately.
     """
-    basic = base64.b64encode(f"x-access-token:{token.strip()}".encode()).decode()
-    return ["-c", f"http.extraHeader=Authorization: Basic {basic}"]
+    return [
+        "-c", "credential.helper=",
+        "-c", f"http.extraHeader=Authorization: Basic {_basic_credential(token)}",
+        # Session storage may be owned by another uid; without this git exits 128 with
+        # "detected dubious ownership" on every command inside the clone.
+        "-c", "safe.directory=*",
+    ]
+
+
+def _basic_credential(token: str) -> str:
+    return base64.b64encode(f"x-access-token:{token.strip()}".encode()).decode()
 
 
 def _git_env() -> dict[str, str]:
@@ -62,19 +75,37 @@ def _ensure_git() -> None:
 def _redact(text: str, token: str) -> str:
     if not text or not token:
         return text
-    return text.replace(token, "***")
+    for secret in (token.strip(), _basic_credential(token)):
+        text = text.replace(secret, "***")
+    return text
 
 
 def _run_git(args: list[str], cwd: Path, token: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *_git_auth_args(token), *args],
-        cwd=cwd,
-        env=_git_env(),
-        capture_output=True,
-        text=True,
-        timeout=GIT_TIMEOUT_S,
-        check=check,
-    )
+    """Run git with auth. Errors carry git's own message, redacted, never the command line
+    (which contains the credential)."""
+    step = args[0]
+    start = time.monotonic()
+    try:
+        proc = subprocess.run(
+            ["git", *_git_auth_args(token), *args],
+            cwd=cwd,
+            env=_git_env(),
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("git %s timed out after %ss cwd=%s", step, GIT_TIMEOUT_S, cwd)
+        raise RuntimeError(f"git {step} timed out after {GIT_TIMEOUT_S}s") from None
+    elapsed = time.monotonic() - start
+    stderr = _redact((proc.stderr or "").strip(), token)
+    if proc.returncode == 0:
+        logger.info("git %s ok in %.1fs cwd=%s", step, elapsed, cwd)
+        return proc
+    logger.warning("git %s exit=%s in %.1fs cwd=%s stderr=%s", step, proc.returncode, elapsed, cwd, stderr[-500:])
+    if check:
+        raise RuntimeError(f"git {step} failed (exit {proc.returncode}): {stderr[-500:] or 'no output'}")
+    return proc
 
 
 def create_github_pull_request(
@@ -110,17 +141,13 @@ def create_github_pull_request(
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:500]
-        raise RuntimeError(f"GitHub API {e.code} creating pull request: {_redact(detail, token)}") from e
+        detail = _redact(e.read().decode()[:500], token)
+        logger.warning("create pull request %s/%s %s -> %s: HTTP %s %s", owner, repo, head_branch, base_branch, e.code, detail)
+        raise RuntimeError(f"GitHub API {e.code} creating pull request: {detail}") from e
     url = data.get("html_url")
     if not url:
         raise RuntimeError("GitHub API did not return pull request URL")
     return str(url)
-
-
-def _fail(proc: subprocess.CompletedProcess[str], token: str, label: str) -> None:
-    detail = _redact((proc.stderr or proc.stdout or label).strip(), token)
-    raise RuntimeError(detail[:500])
 
 
 def clone_repository(
@@ -142,37 +169,39 @@ def clone_repository(
         raise ValueError("clone path must stay inside the workspace")
 
     remote = public_remote(owner, repo)
+    logger.info("clone_repository start %s/%s branch=%s dest=%s", owner, repo, base_branch, dest)
+    action = ""
     if dest.is_dir() and (dest / ".git").is_dir():
-        _run_git(["remote", "set-url", "origin", remote], dest, token)
-        _run_git(["fetch", "origin", base_branch, "--depth", "50"], dest, token)
-        _run_git(["checkout", base_branch], dest, token)
-        _run_git(["reset", "--hard", f"origin/{base_branch}"], dest, token)
-        action = "refreshed"
-    else:
-        if dest.exists() and not (dest / ".git").is_dir():
-            raise ValueError(f"{rel} exists and is not a git clone; remove it first")
+        try:
+            _run_git(["remote", "set-url", "origin", remote], dest, token)
+            _run_git(["fetch", "origin", base_branch, "--depth", "50"], dest, token)
+            _run_git(["checkout", base_branch], dest, token)
+            _run_git(["reset", "--hard", f"origin/{base_branch}"], dest, token)
+            action = "refreshed"
+        except RuntimeError as e:
+            # Refresh discards local edits anyway; a broken clone (e.g. left by an earlier
+            # failed run) is replaced with a fresh one.
+            logger.warning("refresh of %s failed, recloning: %s", rel, e)
+            shutil.rmtree(dest, ignore_errors=True)
+    elif dest.exists():
+        logger.warning("%s exists but is not a git clone, removing it", rel)
+        shutil.rmtree(dest, ignore_errors=True)
+
+    if not action:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        proc = _run_git(
-            [
-                "clone",
-                "--branch",
-                base_branch,
-                "--single-branch",
-                "--depth",
-                "50",
-                remote,
-                str(dest),
-            ],
-            dest.parent,
-            token,
-            check=False,
-        )
-        if proc.returncode != 0:
-            _fail(proc, token, "git clone failed")
-        _run_git(["remote", "set-url", "origin", remote], dest, token)
+        try:
+            _run_git(
+                ["clone", "--branch", base_branch, "--single-branch", "--depth", "50", remote, str(dest)],
+                dest.parent,
+                token,
+            )
+        except RuntimeError:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
         action = "cloned"
 
     head = _run_git(["rev-parse", "HEAD"], dest, token).stdout.strip()
+    logger.info("clone_repository done %s/%s action=%s head=%s", owner, repo, action, head)
     return {
         "workspace_path": rel,
         "base_branch": base_branch,
@@ -232,10 +261,9 @@ def create_fix_pull_request(
     _run_git(["commit", "-m", commit_message], repo_dir, token)
     commit_sha = _run_git(["rev-parse", "HEAD"], repo_dir, token).stdout.strip()
 
-    push = _run_git(["push", "-u", "origin", branch], repo_dir, token, check=False)
-    if push.returncode != 0:
-        _fail(push, token, "git push failed")
+    _run_git(["push", "-u", "origin", branch], repo_dir, token)
 
+    logger.info("opening pull request %s/%s %s -> %s", owner, repo, branch, base_branch)
     pr_url = create_github_pull_request(
         owner,
         repo,

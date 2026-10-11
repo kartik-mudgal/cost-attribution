@@ -210,6 +210,7 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | `ATHENA_TABLE` | `cost_report` | CUR 2.0 table, partitioned by `billing_period` |
 | `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a 20 GB per-query scan limit |
 | `ATHENA_TIMEOUT_S` | `120` | Seconds before `athena_query` stops a query |
+| `AGENT_LOG_LEVEL` | `INFO` | Level for the agent's own logs (agent, `github_fix`, `memory`), written to stdout and shipped to the runtime's CloudWatch log group |
 | `GRAFANA_MCP_URL` | `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp` | Grafana MCP server (streamable HTTP). Empty disables it |
 | `GRAFANA_MCP_SECRET_ARN` | `grafana-mcp` secret | Secrets Manager ARN for the AI gateway virtual key |
 | `GRAFANA_MCP_SECRET_JSON_KEY` | `x-litellm-api-key` | JSON key inside that secret |
