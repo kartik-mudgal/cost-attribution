@@ -1,8 +1,12 @@
 """Cost investigator agent: Strands on Bedrock, served by AgentCore Runtime.
 
-Payload: {"prompt": "..."} or {"case": {...}}. Session storage is mounted at
-WORKSPACE so files written in one invocation are visible in later invocations
-of the same session.
+Payload: {"prompt": "..."} or {"case": {...}} (also accepts "message").
+The entrypoint streams AG-UI SSE events (text tokens, tool calls, results)
+so frontends like sample-agui-bedrock-agentcore can render the run live.
+BedrockAgentCoreApp wraps each yielded dict as ``data: {...}\\n\\n``.
+
+Session storage is mounted at WORKSPACE so files written in one invocation
+are visible in later invocations of the same session.
 
 GitHub access reads a PAT from AWS Secrets Manager (JSON key api_key_value).
 Default secret is the AgentCore-managed github-pat vault entry; override with
@@ -20,7 +24,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
+from typing import Any, AsyncIterator
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -370,20 +376,165 @@ TOOLS = [
 ]
 
 
-@app.entrypoint
-def invoke(payload: dict) -> dict:
+def _agui_event(event_type: str, **data: Any) -> dict:
+    """Build one AG-UI event dict (AgentCore wraps it as SSE)."""
+    return {
+        "type": event_type,
+        "eventId": str(uuid.uuid4()),
+        "timestamp": time.time(),
+        **data,
+    }
+
+
+def _extract_tool_results(message_obj: Any) -> list[tuple[str, Any]]:
+    """Pull toolResult blocks from a Strands history message event."""
+    if not isinstance(message_obj, dict):
+        return []
+    if message_obj.get("role") != "user":
+        return []
+    out: list[tuple[str, Any]] = []
+    for block in message_obj.get("content", []) or []:
+        if not isinstance(block, dict) or "toolResult" not in block:
+            continue
+        tr = block["toolResult"]
+        content = tr.get("content", [])
+        if (
+            isinstance(content, list)
+            and content
+            and isinstance(content[0], dict)
+            and "text" in content[0]
+        ):
+            txt = content[0]["text"]
+        else:
+            txt = str(content)
+        try:
+            parsed: Any = json.loads(txt)
+        except Exception:
+            parsed = {"result": txt}
+        out.append((tr.get("toolUseId", ""), parsed))
+    return out
+
+
+def _prompt_from_payload(payload: dict) -> str:
     if "case" in payload:
-        prompt = "Investigate this case:\n" + json.dumps(payload["case"])
-    else:
-        prompt = payload.get("prompt", "List the workspace and say what is there.")
-    agent = Agent(
+        return "Investigate this case:\n" + json.dumps(payload["case"])
+    return payload.get(
+        "prompt",
+        payload.get("message", "List the workspace and say what is there."),
+    )
+
+
+def _build_agent() -> Agent:
+    return Agent(
         model=MODEL_ID,
         system_prompt=SYSTEM_PROMPT,
         tools=TOOLS,
         plugins=[_skills_plugin()],
     )
-    result = agent(prompt)
-    return {"result": str(result), "workspace_files": list_workspace()}
+
+
+@app.entrypoint
+async def invoke(payload: dict) -> AsyncIterator[dict]:
+    """Stream AG-UI events for the cost investigator run."""
+    prompt = _prompt_from_payload(payload)
+    run_id = str(uuid.uuid4())
+    agent = _build_agent()
+
+    yield _agui_event("RUN_STARTED", runId=run_id)
+    yield _agui_event(
+        "STATE_SNAPSHOT",
+        snapshot={"status": "processing", "tools_invoked": [], "workspace_files": list_workspace()},
+    )
+
+    active_text_msg_id: str | None = None
+    active_tool_call_id: str | None = None
+    seen_tool_args: dict[str, str] = {}
+    tools_invoked: list[str] = []
+
+    try:
+        async for event in agent.stream_async(prompt):
+            if event.get("type") == "tool_use_stream":
+                tu = event.get("current_tool_use") or {}
+                tu_id = tu.get("toolUseId")
+                tu_name = tu.get("name", "")
+                tu_input = tu.get("input", "")
+                if not tu_id:
+                    continue
+
+                if active_text_msg_id is not None:
+                    yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
+                    active_text_msg_id = None
+
+                if active_tool_call_id != tu_id:
+                    if active_tool_call_id is not None:
+                        yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
+                    active_tool_call_id = tu_id
+                    tools_invoked.append(tu_name)
+                    yield _agui_event("TOOL_CALL_START", toolCallId=tu_id, toolName=tu_name)
+
+                cumulative = tu_input if isinstance(tu_input, str) else json.dumps(tu_input)
+                prev = seen_tool_args.get(tu_id, "")
+                if cumulative.startswith(prev) and len(cumulative) > len(prev):
+                    delta = cumulative[len(prev) :]
+                    yield _agui_event("TOOL_CALL_ARGS", toolCallId=tu_id, delta=delta)
+                    seen_tool_args[tu_id] = cumulative
+                elif cumulative != prev:
+                    yield _agui_event("TOOL_CALL_ARGS", toolCallId=tu_id, delta=cumulative)
+                    seen_tool_args[tu_id] = cumulative
+                continue
+
+            if "data" in event and isinstance(event["data"], str) and event["data"]:
+                if active_tool_call_id is not None:
+                    yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
+                    active_tool_call_id = None
+
+                if active_text_msg_id is None:
+                    active_text_msg_id = str(uuid.uuid4())
+                    yield _agui_event(
+                        "TEXT_MESSAGE_START",
+                        messageId=active_text_msg_id,
+                        role="assistant",
+                    )
+                yield _agui_event(
+                    "TEXT_MESSAGE_CONTENT",
+                    messageId=active_text_msg_id,
+                    delta=event["data"],
+                )
+                continue
+
+            if "message" in event:
+                msg = event["message"]
+                if isinstance(msg, str):
+                    try:
+                        msg = json.loads(msg.replace("'", '"'))
+                    except Exception:
+                        msg = None
+                for tu_id, parsed in _extract_tool_results(msg):
+                    if active_tool_call_id == tu_id:
+                        yield _agui_event("TOOL_CALL_END", toolCallId=tu_id)
+                        active_tool_call_id = None
+                    yield _agui_event("TOOL_CALL_RESULT", toolCallId=tu_id, result=parsed)
+
+        if active_tool_call_id is not None:
+            yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
+        if active_text_msg_id is not None:
+            yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
+
+        yield _agui_event(
+            "STATE_DELTA",
+            delta={
+                "status": "idle",
+                "tools_invoked": tools_invoked,
+                "workspace_files": list_workspace(),
+            },
+        )
+        yield _agui_event("RUN_FINISHED", runId=run_id)
+    except Exception as e:
+        yield _agui_event(
+            "RUN_ERROR",
+            runId=run_id,
+            error={"code": "AGENT_ERROR", "message": str(e)},
+        )
 
 
 if __name__ == "__main__":
