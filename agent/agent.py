@@ -49,7 +49,7 @@ from strands.tools.mcp import MCPClient
 logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
-MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-5")
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "").strip()
 AGENTCORE_ACTOR_ID = os.environ.get("AGENTCORE_ACTOR_ID", "cost-investigator")
 AWS_REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))

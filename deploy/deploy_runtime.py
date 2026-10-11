@@ -28,7 +28,7 @@ spec = dict(
     filesystemConfigurations=[{"sessionStorage": {"mountPath": "/mnt/workspace"}}],
     environmentVariables={
         "WORKSPACE_DIR": "/mnt/workspace",
-        "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "MODEL_ID": "us.anthropic.claude-sonnet-5",
         "GITHUB_DEFAULT_OWNER": "devrev",
         # Secrets Manager ARN for the GitHub PAT (JSON key api_key_value).
         "GITHUB_PAT_SECRET_ARN": (
