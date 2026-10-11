@@ -73,6 +73,12 @@
       "Resource": "arn:aws:secretsmanager:us-west-2:270149200236:secret:bedrock-agentcore-identity!default/apikey/github-pat-*"
     },
     {
+      "Sid": "GrafanaMcpSecret",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY"
+    },
+    {
       "Sid": "AthenaQuery",
       "Effect": "Allow",
       "Action": [

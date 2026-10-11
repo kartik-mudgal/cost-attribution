@@ -182,6 +182,9 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | `ATHENA_TABLE` | `cost_report` | CUR 2.0 table, partitioned by `billing_period` |
 | `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a 20 GB per-query scan limit |
 | `ATHENA_TIMEOUT_S` | `120` | Seconds before `athena_query` stops a query |
+| `GRAFANA_MCP_URL` | `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp` | Grafana MCP server (streamable HTTP). Empty disables it |
+| `GRAFANA_MCP_SECRET_ARN` | `grafana-mcp` secret | Secrets Manager ARN for the AI gateway virtual key |
+| `GRAFANA_MCP_SECRET_JSON_KEY` | `x-litellm-api-key` | JSON key inside that secret |
 
 ## Athena query tool
 
@@ -237,9 +240,26 @@ aws bedrock-agentcore-control create-api-key-credential-provider \
 Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
 `GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
 
+## Grafana MCP server
+
+The agent attaches Grafana as an MCP server through the DevRev AI gateway
+(`https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`). Each request sends the header
+`x-litellm-api-key: Bearer <virtual key>`.
+
+- The virtual key is in the Secrets Manager secret `grafana-mcp`, under the JSON key
+  `x-litellm-api-key`. It can be stored with or without the `Bearer ` prefix. The role reads it via
+  `GrafanaMcpSecret` in `deploy/role-policy.json`.
+- The gateway exposes 61 tools, named `grafana-<tool>` (e.g. `grafana-query_prometheus`). They
+  include write actions such as creating incidents, annotations and datasources, and installing
+  plugins; nothing filters them yet.
+- A new MCP connection is opened for each invocation and closed when the agent finishes.
+- If the secret can't be read or the server can't be reached, the agent logs a warning and runs
+  without the Grafana tools.
+
 ## Status
 
-Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool and the CUR
-skills are in place. Still to add in `agent/agent.py`: `get_cloudwatch` and `describe_resource`.
+Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool, the CUR
+skills and the Grafana MCP server are in place. No skill or prompt tells the agent when to use the
+Grafana tools yet. Still to add in `agent/agent.py`: `get_cloudwatch` and `describe_resource`.
 Until then the skills tell the agent which CloudWatch metric would confirm a finding and to lower
 its confidence.

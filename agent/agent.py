@@ -15,9 +15,13 @@ GITHUB_PAT_SECRET_ARN. The token is never logged or returned to the model.
 CUR data is queried through Athena (athena_query). The cur-athena skill describes
 the table. One skill per service (cur-sqs, cur-dynamodb, cur-ec2, cur-s3, cur-sns,
 cur-lambda, cur-elasticache, cur-bedrock) describes how to query that service.
+
+Grafana is attached as an MCP server through the DevRev AI gateway. Its virtual key
+is read from Secrets Manager (GRAFANA_MCP_SECRET_ARN); the gateway names its tools grafana-*.
 """
 import base64
 import json
+import logging
 import os
 import re
 import time
@@ -31,6 +35,9 @@ from typing import Any, AsyncIterator
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent, AgentSkills, tool
+from strands.tools.mcp import MCPClient
+
+logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
@@ -50,6 +57,13 @@ ATHENA_TABLE = os.environ.get("ATHENA_TABLE", "cost_report")
 ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "cost-agent")
 ATHENA_TIMEOUT_S = int(os.environ.get("ATHENA_TIMEOUT_S", "120"))
 ATHENA_MAX_ROWS = 500
+# Empty GRAFANA_MCP_URL disables the Grafana MCP server.
+GRAFANA_MCP_URL = os.environ.get("GRAFANA_MCP_URL", "https://ai-gateway.dev.devrev-eng.ai/grafana/mcp")
+GRAFANA_MCP_SECRET_ARN = os.environ.get(
+    "GRAFANA_MCP_SECRET_ARN",
+    "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
+)
+GRAFANA_MCP_SECRET_JSON_KEY = os.environ.get("GRAFANA_MCP_SECRET_JSON_KEY", "x-litellm-api-key")
 
 SYSTEM_PROMPT = f"""You investigate AWS cost changes for SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda, ElastiCache and Bedrock.
 Use only numbers returned by tools or present in the case. Never invent figures.
@@ -70,6 +84,7 @@ Answer with: cause, evidence, fix, estimated monthly saving, confidence."""
 _athena = boto3.client("athena", region_name=ATHENA_REGION)
 _secrets = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 _github_pat_cache: str | None = None
+_grafana_key_cache: str | None = None
 
 
 def _skills_plugin() -> AgentSkills:
@@ -115,6 +130,43 @@ def _github_pat() -> str:
         raise RuntimeError(f"empty GitHub PAT in secret {GITHUB_PAT_SECRET_ARN!r}")
     _github_pat_cache = token
     return token
+
+
+def _grafana_key() -> str:
+    """Return the x-litellm-api-key header value for the Grafana MCP gateway (cached for the process)."""
+    global _grafana_key_cache
+    if _grafana_key_cache:
+        return _grafana_key_cache
+    raw = _secrets.get_secret_value(SecretId=GRAFANA_MCP_SECRET_ARN).get("SecretString") or ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    key = (payload.get(GRAFANA_MCP_SECRET_JSON_KEY) if isinstance(payload, dict) else raw) or ""
+    key = key.strip()
+    if not key:
+        raise RuntimeError(f"secret {GRAFANA_MCP_SECRET_ARN!r} has no value for {GRAFANA_MCP_SECRET_JSON_KEY!r}")
+    # The gateway expects "Bearer <virtual key>"; the secret may hold either form.
+    if not key.lower().startswith("bearer "):
+        key = f"Bearer {key}"
+    _grafana_key_cache = key
+    return key
+
+
+def _grafana_mcp() -> MCPClient | None:
+    """Build the Grafana MCP client, or None if it is disabled or its key can't be read."""
+    if not GRAFANA_MCP_URL:
+        return None
+    try:
+        key = _grafana_key()
+    except Exception as e:
+        logger.warning("Grafana MCP disabled: could not read %s: %s", GRAFANA_MCP_SECRET_ARN, e)
+        return None
+    return MCPClient(
+        url=GRAFANA_MCP_URL,
+        headers={"x-litellm-api-key": key},
+        continue_on_error=True,
+    )
 
 
 def _github_request(path: str, params: dict | None = None, accept: str = "application/vnd.github+json") -> dict | list:
@@ -425,10 +477,11 @@ def _prompt_from_payload(payload: dict) -> str:
 
 
 def _build_agent() -> Agent:
+    grafana = _grafana_mcp()
     return Agent(
         model=MODEL_ID,
         system_prompt=SYSTEM_PROMPT,
-        tools=TOOLS,
+        tools=TOOLS + ([grafana] if grafana else []),
         plugins=[_skills_plugin()],
     )
 
@@ -535,6 +588,8 @@ async def invoke(payload: dict) -> AsyncIterator[dict]:
             runId=run_id,
             error={"code": "AGENT_ERROR", "message": str(e)},
         )
+    finally:
+        agent.cleanup()
 
 
 if __name__ == "__main__":
