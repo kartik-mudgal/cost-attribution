@@ -9,10 +9,13 @@ The agent is built with [Strands](https://strandsagents.com/), calls Claude Sonn
 and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persistent workspace mounted at
 `/mnt/workspace`, so notes written in one call are still there in later calls with the same session ID.
 
+This README goes from the **daily workflow and agent behavior**, through **skills and memory**, to
+**deploying and operating** the runtime.
+
 ## End-to-end flow
 
-AWS delivers billing data once per day. A DevRev workflow starts the cost investigator on a
-schedule, waits for the async run to finish, and posts the report to Slack.
+AWS delivers billing data once per day. A DevRev workflow on a schedule starts the cost
+investigator, waits for the run to finish, and posts the report to Slack.
 
 ```mermaid
 flowchart TB
@@ -27,11 +30,9 @@ flowchart TB
 
   subgraph devrev [DevRev]
     wf["Scheduled workflow"]
-    hook["Catch finished report"]
-    slack["Slack channel"]
-    wf --> hook
-    hook --> slack
   end
+
+  slack["Slack channel"]
 
   subgraph agentcore [Agent runtime]
     api["Agent API"]
@@ -41,18 +42,17 @@ flowchart TB
 
   wf -->|"Kick off today's analysis"| api
   agent -->|"Read costs and metrics"| query
-  agent -->|"Deliver report when done"| hook
+  agent -->|"Deliver report when done"| wf
+  wf -->|"Post daily report"| slack
 ```
-
-Daily run in more detail:
 
 | Step | What happens |
 | --- | --- |
 | 1 | AWS refreshes the daily cost export into object storage. |
-| 2 | A fixed demo snapshot of usage metrics lives alongside it so investigations can compare spend to traffic. |
-| 3 | On schedule, DevRev starts the agent with today's question and tells it where to send the answer when finished. |
-| 4 | The agent runs in the background, queries cost and metrics, and returns the full written report to DevRev. |
-| 5 | DevRev posts the report to Slack (plus download links if the agent attached files). |
+| 2 | **Demo:** usage metrics are a scraped snapshot in storage. **Production:** the CloudWatch skill supplies live metrics. |
+| 3 | The DevRev workflow starts the agent with today's question and where to send the answer when finished. |
+| 4 | The agent runs in the background, queries cost and metrics, and returns the report to the workflow. |
+| 5 | The workflow posts the report to Slack (plus download links if the agent attached files). |
 
 ### AWS × DevRev hackathon stack
 
@@ -70,21 +70,15 @@ Services that **power** the demo (not the AWS products whose bills the agent ana
 | **AWS Secrets Manager** | GitHub PAT and optional Grafana gateway credentials (never in code). |
 | **AWS IAM** | Runtime role permissions for Bedrock, Athena, S3, secrets, and memory. |
 | **Amazon CloudWatch Logs** | AgentCore runtime logs for debugging. |
-| **AWS X-Ray** | Optional tracing from the runtime. |
-| **Amazon CloudWatch** | Runtime telemetry; demo usage metrics were scraped from CloudWatch into S3 (agent queries Athena, not the live API). |
-| **AWS Lambda** + **Amazon API Gateway (HTTP)** | Thin proxy DevRev calls to start the agent and return immediately while work continues. |
-| **Amazon CloudFront** | Optional CDN in front of the browser chat UI (`ui/`); not used for the daily Slack path. |
+| **Amazon CloudWatch** | Runtime telemetry; demo metrics scraped into storage; production via the CloudWatch skill. |
+| **AWS Lambda** + **Amazon API Gateway (HTTP)** | Thin proxy the workflow calls to start the agent and return while work continues. |
+| **Amazon CloudFront** | Optional CDN for the browser chat UI (`ui/`); not used for the daily Slack path. |
 
 | DevRev capability | Purpose in this architecture |
 | --- | --- |
-| **Scheduled workflow** | Runs the daily cost investigation on a clock. |
-| **Agent / session integration** | Sends the prompt and receives the finished report from the agent. |
-| **Slack** | Posts the daily write-up to the team channel. |
-| **AI gateway (optional)** | Routes **Grafana MCP** when custom app metrics are enabled. |
+| **Scheduled workflow** | Daily trigger; starts the agent; receives the report; posts to Slack. |
 
-The agent’s skills also describe how to read **SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache, and Bedrock** spend from CUR—that is the *subject* of analysis, not the hosting stack.
-
-API field names and JSON shapes: [`ui/README.md`](ui/README.md).
+Diagrams: [`architecture.html`](architecture.html) (**Daily cost report**). Workflow invoke and webhook JSON: [`ui/README.md`](ui/README.md).
 
 ### Inside the agent
 
@@ -112,352 +106,7 @@ flowchart LR
   model --> out["Written report and optional attachments"]
 ```
 
-| Source | How the agent uses it |
-| --- | --- |
-| CUR | `athena_query` against Parquet-backed `cost_report`; scope and SQL patterns come from `cur-athena` and per-service `cur-*` skills. |
-| CloudWatch (demo) | Same `athena_query` tool against `cloudwatch_metrics`; no live CloudWatch API. Load `cloudwatch-metrics` before citing metric values. |
-| Grafana | Optional MCP server (`GRAFANA_MCP_URL`); custom app metrics via `grafana-*` tools through the DevRev AI gateway. Off by default in deploy. |
-| Code / deploys | `github-code-lookup`, `marina-deployments`, and optionally `github-fix-pr` for fix PRs. |
-
-Bundled skills (load with the `skills` tool before acting):
-
-| Skill | When to use |
-| --- | --- |
-| `cur-athena` | Before any cost query: CUR table, columns, cost rules, one-service scope |
-| `cur-sqs` | SQS request mix, batching, empty receives, top drivers |
-| `cur-dynamodb` | DynamoDB capacity mode, storage, PITR, Streams |
-| `cur-ec2` | EC2, EBS, NAT, public IPv4, transfer |
-| `cur-s3` | Storage class, requests, transfer, retrieval fees |
-| `cur-sns` | Publishes, deliveries, fan-out |
-| `cur-lambda` | GB-seconds, invocations, provisioned concurrency |
-| `cur-elasticache` | Node-hours, replicas, backups |
-| `cur-bedrock` | Token lines, marketplace models |
-| `cloudwatch-metrics` | Query `cloudwatch_metrics` for October 2026 daily values |
-| `github-code-lookup` | Search `devrev` repos for definitions and callers |
-| `marina-deployments` | Correlate cost windows to `marina` `image.tag` deploys |
-| `github-fix-pr` | Clone, edit, open `cost-fix/*` PRs |
-
-The same table is repeated under [Agent skills](#agent-skills) with slightly more detail.
-
-A visual version of this flow lives in [`architecture.html`](architecture.html) (section **Daily cost report**).
-
-## Layout
-
-```
-agent/
-  agent.py            Agent code and AgentCore entrypoint
-  artifacts.py        Uploads user-facing files to S3 and signs a download URL
-  requirements.txt    Python dependencies
-  skills/             Strands Agent Skills (SKILL.md packages), bundled into the runtime zip
-deploy/
-  package.sh          Builds the code zip and uploads it to S3
-  deploy_runtime.py   Creates or updates the AgentCore runtime
-  invoke.py           Calls the deployed runtime
-  trust.json          Trust policy for the runtime IAM role
-  role-policy.json    Permissions policy for the runtime IAM role
-architecture.html     Architecture diagrams (daily flow + phased design notes)
-cur-guide.html        Cost and Usage Report (CUR) guide
-```
-
-## What is not committed
-
-These paths are listed in `.gitignore` because they are generated:
-
-| Path | What it is | How to recreate it |
-| --- | --- | --- |
-| `agent/.venv/` | Local Python 3.12 virtual environment | `cd agent && uv venv --python 3.12 && uv pip install -r requirements.txt` |
-| `deploy/build/pkg/` | Linux ARM64 dependencies plus `agent.py`, unzipped | `deploy/package.sh` |
-| `deploy/build/agent.zip` | The code zip uploaded to S3 | `deploy/package.sh` |
-| `deploy/build/last_key` | S3 key of the most recent upload, read by `deploy_runtime.py` | `deploy/package.sh` |
-| `deploy/build/runtime.json` | ARN, version and status of the deployed runtime, read by `invoke.py` | `deploy/deploy_runtime.py` |
-
-`package.sh` deletes and rebuilds the whole `deploy/build/` folder each time it runs.
-
-## Prerequisites
-
-- [uv](https://docs.astral.sh/uv/) and Python 3.12
-- AWS CLI v2 with credentials for account `270149200236` (the scripts use the `hackathon` profile)
-- `zip`
-
-All resources are in `us-west-2`.
-
-## One-time AWS setup
-
-You only need this if the S3 bucket and IAM role don't exist yet.
-
-```bash
-export AWS_PROFILE=hackathon
-
-aws s3 mb s3://cost-agent-artifacts-270149200236 --region us-west-2
-aws s3 mb s3://cost-agent-user-artifacts-270149200236 --region us-west-2
-
-aws iam create-role --role-name cost-agent-runtime-role \
-  --assume-role-policy-document file://deploy/trust.json
-aws iam put-role-policy --role-name cost-agent-runtime-role \
-  --policy-name runtime \
-  --policy-document file://deploy/role-policy.json
-```
-
-### Athena workgroup for CUR queries
-
-The agent queries the CUR table `hackathon_cur.cost_report` (Glue catalog, `us-west-2`) through a
-dedicated `cost-agent` workgroup. The workgroup uses Athena managed query results, so there is no
-results bucket and the runtime role needs no S3 permissions for results. It also caps each query
-at 20 GB scanned (about $0.10 at Athena's $5 per TB).
-
-The table has no partition by service, so every query reads the whole month for the columns it
-uses. In early October 2026 (10 days of data), a DynamoDB breakdown already scanned about 0.7 GB;
-a full month will be roughly three times that. Athena cancels any query that goes over the cap.
-
-```bash
-aws athena create-work-group --name cost-agent --region us-west-2 \
-  --configuration '{
-    "ManagedQueryResultsConfiguration": {"Enabled": true},
-    "EnforceWorkGroupConfiguration": true,
-    "BytesScannedCutoffPerQuery": 21474836480,
-    "PublishCloudWatchMetricsEnabled": true
-  }'
-```
-
-To change the cap on the existing workgroup (value in bytes):
-
-```bash
-aws athena update-work-group --work-group cost-agent --region us-west-2 \
-  --configuration-updates '{"BytesScannedCutoffPerQuery": 21474836480}'
-```
-
-`ManagedQueryResultsConfiguration` needs a recent AWS CLI. If yours rejects it, upgrade the CLI or
-turn on managed query results for the workgroup in the Athena console.
-
-The runtime role's Athena, Glue and CUR bucket permissions are in `deploy/role-policy.json`
-(statements `AthenaQuery`, `CurCatalog`, `CurDataList`, `CurDataRead`). The deploy workflow applies
-that file to the role on every merge to `main`, so change permissions there, not by hand.
-
-## AgentCore Memory (short-term turns)
-
-Conversation turns are stored in AgentCore Memory STM (no long-term strategies),
-wired through `AgentCoreMemorySessionManager` in `agent/agent.py`.
-
-```bash
-# One-time (or reuse): creates cost_investigator_stm and writes deploy/build/memory.json
-uv run --with boto3 python deploy/create_memory.py
-```
-
-`deploy/deploy_runtime.py` sets `AGENTCORE_MEMORY_ID` / `AGENTCORE_ACTOR_ID`.
-IAM for CreateEvent/ListEvents/GetEvent/DeleteEvent is in `deploy/role-policy.json`
-(`AgentCoreMemoryStm`).
-
-## Local chat UI
-
-See [`ui/README.md`](ui/README.md). Quick start:
-
-```bash
-uv run --with boto3 python ui/local_server.py
-# http://127.0.0.1:8787
-```
-
-## Build and deploy
-
-```bash
-export AWS_PROFILE=hackathon
-
-# 1. Build the zip (Linux ARM64 wheels + agent.py) and upload it to S3.
-#    Writes deploy/build/agent.zip and deploy/build/last_key.
-./deploy/package.sh
-
-# 2. Create the runtime, or update it if it already exists, and wait until it is ready.
-#    Writes deploy/build/runtime.json.
-uv run --with boto3 python deploy/deploy_runtime.py
-```
-
-`package.sh` uses the `BUCKET` and `KEY` environment variables if they are set, so you can upload
-somewhere else without editing the script. That bucket holds the code zip only. Files the agent
-generates for users go to `cost-agent-user-artifacts-270149200236` (see below).
-
-### CI deploy (merge to main)
-
-`.github/workflows/deploy.yml` applies `deploy/role-policy.json` to `cost-agent-runtime-role`,
-then runs `package.sh` and `deploy_runtime.py`, on pushes to `main` that touch `agent/` or
-`deploy/` (and on manual `workflow_dispatch`). Re-applying an unchanged policy document has no
-effect on permissions.
-
-Add these repository secrets (Settings → Secrets and variables → Actions):
-
-| Secret | Value |
-| --- | --- |
-| `AWS_ACCESS_KEY_ID` | Access key for an IAM user/role that can deploy (see below) |
-| `AWS_SECRET_ACCESS_KEY` | Matching secret key |
-
-The AWS principal behind those keys needs permission to:
-
-- `s3:PutObject` (and usually `s3:GetObject`) on `s3://cost-agent-artifacts-270149200236/*`
-- AgentCore control: create/update/get/list agent runtimes in `us-west-2`
-- `iam:PassRole` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
-- `iam:PutRolePolicy` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
-
-## Invoke
-
-```bash
-uv run --with boto3 python deploy/invoke.py "List the workspace and say what is there."
-
-# Name one service per request:
-uv run --with boto3 python deploy/invoke.py "Which SQS queues changed most in cost over the last week, and why?"
-
-# Reuse a session to keep the same workspace (the ID must be at least 33 characters):
-uv run --with boto3 python deploy/invoke.py "Continue from your notes." session-<id-from-previous-call>
-
-# Optional third arg / AGENTCORE_USER_ID: runtimeUserId (not required for GitHub; PAT comes from Secrets Manager).
-uv run --with boto3 python deploy/invoke.py "Search github for marina" session-$(uuidgen | tr -d -) my-user
-```
-
-`invoke.py` reads the runtime ARN from `deploy/build/runtime.json`. On a fresh clone that file won't
-exist. You can either run `deploy_runtime.py` (which redeploys from `last_key`, so run `package.sh`
-first), or create the file by hand using the existing runtime's ARN:
-
-```bash
-aws bedrock-agentcore-control list-agent-runtimes --region us-west-2 \
-  --query "agentRuntimes[?agentRuntimeName=='cost_investigator'].agentRuntimeArn" --output text
-```
-
-```bash
-mkdir -p deploy/build
-echo '{"agentRuntimeArn": "<arn from above>"}' > deploy/build/runtime.json
-```
-
-## Configuration
-
-The runtime sets these environment variables (see `deploy_runtime.py`):
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
-| `MODEL_ID` | `us.anthropic.claude-sonnet-5` | Bedrock model or inference profile |
-| `MAX_OUTPUT_TOKENS` | `16000` | Max tokens in one model response. A report is several `append_workspace_file` calls, one section each |
-| `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
-| `GITHUB_PAT_SECRET_ARN` | AgentCore-managed `github-pat` secret | Secrets Manager ARN for the GitHub PAT |
-| `GITHUB_PAT_SECRET_JSON_KEY` | `api_key_value` | JSON key inside that secret |
-| `SKILLS_DIR` | `<alongside agent.py>/skills` | Bundled Strands skills directory |
-| `ATHENA_REGION` | `us-west-2` | Region of the Athena workgroup and Glue catalog |
-| `ATHENA_DATABASE` | `hackathon_cur` | Glue database holding the CUR table |
-| `ATHENA_TABLE` | `cost_report` | CUR 2.0 table, partitioned by `billing_period` |
-| `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a 20 GB per-query scan limit |
-| `ATHENA_TIMEOUT_S` | `120` | Seconds before `athena_query` stops a query |
-| `AGENT_LOG_LEVEL` | `INFO` | Level for the agent's own logs (agent, `github_fix`, `memory`), written to stdout and shipped to the runtime's CloudWatch log group |
-| `GRAFANA_MCP_URL` | `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp` | Grafana MCP server (streamable HTTP). Empty disables it |
-| `GRAFANA_MCP_SECRET_ARN` | `grafana-mcp` secret | Secrets Manager ARN for the AI gateway virtual key |
-| `GRAFANA_MCP_SECRET_JSON_KEY` | `x-litellm-api-key` | JSON key inside that secret |
-| `ARTIFACT_BUCKET` | `cost-agent-user-artifacts-270149200236` | Dedicated bucket for files the user can download |
-| `ARTIFACT_PREFIX` | `generated` | Key prefix inside that bucket |
-| `ARTIFACT_URL_TTL_S` | `86400` | Presigned URL lifetime in seconds (60 to 604800) |
-
-## Artifact downloads
-
-When the agent writes something the user should keep (a report, CSV or JSON export, HTML,
-chart, or investigation write-up), it builds the file one section at a time with
-`append_workspace_file`, then calls `publish_artifact`. A response that hits the output
-limit continues automatically, up to three more times, and appends the remaining sections.
-`publish_artifact` uploads the file to
-`s3://cost-agent-user-artifacts-270149200236/generated/<session-id>/<path>` and returns a
-presigned GET URL. The answer includes that URL, and the run also appends an "Artifact
-downloads" message so the link is in the response even if the model skips it.
-
-The bucket stays private. Anyone with the URL can download the object until the URL expires
-(one day by default). The link also dies when the runtime role credentials that signed it
-expire, if that happens first. Create the bucket with the one-time `aws s3 mb` command above
-before the first publish. The runtime role needs `s3:PutObject` and `s3:GetObject` on
-`arn:aws:s3:::cost-agent-user-artifacts-270149200236/*` (`UserArtifacts` in
-`deploy/role-policy.json`).
-
-## Athena query tool
-
-`athena_query(sql, max_rows=200)` in `agent/agent.py` runs one read-only statement and returns the
-rows as JSON with the query ID and MB scanned. It accepts only `SELECT`, `WITH`, `DESCRIBE` and
-`SHOW`, requires `SELECT`/`WITH` queries to filter on `billing_period`, and returns at most 500 rows
-(200 by default), with a note telling the agent to aggregate further when results are cut off.
-
-Restricting a query to one service is left to the skills, not the tool.
-
-## Agent skills
-
-Strands [Agent Skills](https://strandsagents.com/docs/user-guide/concepts/plugins/skills/) live under
-`agent/skills/<skill-name>/SKILL.md`. `package.sh` copies that tree into the runtime zip. At invoke
-time the agent registers them with `AgentSkills` and can load full instructions on demand via the
-`skills` tool.
-
-Also loaded if present: `/mnt/workspace/skills/` (session-specific skills written into the workspace).
-
-Bundled today:
-
-| Skill | When to use |
-| --- | --- |
-| `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
-| `marina-deployments` | Correlate cost/metric windows to marina `image.tag` deploys and commits |
-| `github-fix-pr` | Clone a `devrev` repo in the workspace and open a `cost-fix/*` PR (`git` + REST API) |
-| `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
-| `cur-sqs` | SQS: request mix, batching, empty receives, top cost drivers and metrics |
-| `cur-dynamodb` | DynamoDB: on-demand vs provisioned, storage, PITR, Streams, item size |
-| `cur-ec2` | EC2, EBS, NAT and public IPv4: instance hours, volumes, transfer |
-| `cur-s3` | S3: storage class, request tier, transfer, retrieval and early-delete fees |
-| `cur-sns` | SNS: publishes, deliveries, fan-out transfer, filtering |
-| `cur-lambda` | Lambda: GB-seconds, invocations, provisioned concurrency |
-| `cur-elasticache` | ElastiCache: node-hours by type, replicas, backups |
-| `cur-bedrock` | Bedrock: token types, marketplace model lines, provisioned throughput |
-| `cloudwatch-metrics` | Static October 2026 CloudWatch daily values in the `cloudwatch_metrics` Athena view |
-
-To add a service, create `agent/skills/cur-<service>/SKILL.md` and add its product code to the
-scope table in `cur-athena`.
-
-Add a new skill by creating `agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
-`description`) and markdown instructions, then redeploy.
-
-## GitHub credential (Secrets Manager)
-
-The agent reads the GitHub PAT with `secretsmanager:GetSecretValue` (see `GithubPatSecret` in
-`deploy/role-policy.json`). By default it uses the secret created when you stored the PAT in
-AgentCore Identity (JSON field `api_key_value`):
-
-```bash
-aws bedrock-agentcore-control create-api-key-credential-provider \
-  --name github-pat --api-key "<token>" --region us-west-2
-# Note the apiKeySecretArn from the response → GITHUB_PAT_SECRET_ARN
-```
-
-Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
-`GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
-
-`github-fix-pr` authenticates `git clone` / `git fetch` / `git push` with a short-lived
-`https://x-access-token:<pat>@github.com/...` remote, then rewrites `origin` back to the
-public HTTPS URL so the PAT is not left in `.git/config`. PRs use the GitHub REST API with
-`Authorization: Bearer`. **git** must be on the AgentCore runtime PATH.
-
-## Grafana MCP server
-
-**Off for now.** `GRAFANA_MCP_URL` is empty in `deploy_runtime.py` and in the `agent.py`
-default. Metrics come from the `cloudwatch_metrics` Athena view instead: it is the same dev
-account as the CUR data and gives the same numbers every run. Grafana's `cloudwatch`
-datasource has no region, credentials or role configured, so its account is unknown.
-
-To attach it, set `GRAFANA_MCP_URL` to `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`.
-The agent then connects to Grafana through the DevRev AI gateway, and each request sends the
-header `x-litellm-api-key: Bearer <virtual key>`.
-
-- The virtual key is in the Secrets Manager secret `grafana-mcp`, under the JSON key
-  `x-litellm-api-key`. It can be stored with or without the `Bearer ` prefix. The role reads it via
-  `GrafanaMcpSecret` in `deploy/role-policy.json`.
-- The gateway exposes 61 tools, named `grafana-<tool>` (e.g. `grafana-query_prometheus`). They
-  include write actions such as creating incidents, annotations and datasources, and installing
-  plugins; nothing filters them yet.
-- A new MCP connection is opened for each invocation and closed when the agent finishes.
-- If the secret can't be read or the server can't be reached, the agent logs a warning and runs
-  without the Grafana tools.
-
-## Status
-
-Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool, the CUR
-skills, the `cloudwatch-metrics` skill, and `publish_artifact` (presigned download URLs) are in
-place. October 2026 daily metrics are the Athena view `cloudwatch_metrics`. The Grafana MCP
-server is supported but switched off. Still to add in `agent/agent.py`: a live `get_cloudwatch`
-tool and `describe_resource`.
+See [How the agent handles requests](#how-the-agent-handles-requests) and [Agent skills](#agent-skills).
 
 ## How the agent handles requests
 
@@ -479,6 +128,43 @@ agent is told to stop at about 50 tool calls.
 The prompt hard-codes the data window (CUR 2026-10-01 to 2026-10-10, newest settled day
 2026-10-08) because the data is a static snapshot. Update it, and the dates in `cur-athena`,
 if newer CUR data is loaded.
+
+## Agent skills
+
+Strands [Agent Skills](https://strandsagents.com/docs/user-guide/concepts/plugins/skills/) live under
+`agent/skills/<skill-name>/SKILL.md`. `package.sh` copies that tree into the runtime zip. At invoke
+time the agent registers them with `AgentSkills` and loads instructions on demand via the `skills`
+tool. Session-specific skills may also live under `/mnt/workspace/skills/`.
+
+**Data sources:** billing lines via `athena_query` and `cur-athena` / `cur-*` skills (table
+`hackathon_cur.cost_report`). **Demo** metrics: `cloudwatch-metrics` skill over the Athena view
+`cloudwatch_metrics`. **Production:** CloudWatch skill for live metrics (planned). Code and deploys:
+`github-code-lookup`, `marina-deployments`; fix PRs: `github-fix-pr`. Optional app metrics:
+[Grafana MCP](#grafana-mcp-server).
+
+**`athena_query`:** read-only SQL in `agent/agent.py` (`SELECT` / `WITH` / `DESCRIBE` / `SHOW` only;
+`billing_period` required on cost queries; default 200 rows, max 500). Service scope comes from
+skills, not the tool.
+
+| Skill | When to use |
+| --- | --- |
+| `cur-athena` | Before any cost query: CUR table, key columns, cost rules, one-service scope, investigation pattern |
+| `cur-sqs` | SQS: request mix, batching, empty receives, top cost drivers and metrics |
+| `cur-dynamodb` | DynamoDB: on-demand vs provisioned, storage, PITR, Streams, item size |
+| `cur-ec2` | EC2, EBS, NAT and public IPv4: instance hours, volumes, transfer |
+| `cur-s3` | S3: storage class, request tier, transfer, retrieval and early-delete fees |
+| `cur-sns` | SNS: publishes, deliveries, fan-out transfer, filtering |
+| `cur-lambda` | Lambda: GB-seconds, invocations, provisioned concurrency |
+| `cur-elasticache` | ElastiCache: node-hours by type, replicas, backups |
+| `cur-bedrock` | Bedrock: token types, marketplace model lines, provisioned throughput |
+| `cloudwatch-metrics` | Demo: October 2026 daily values in the `cloudwatch_metrics` Athena view |
+| `github-code-lookup` | Access `devrev` org repos (PAT from Secrets Manager) |
+| `marina-deployments` | Correlate cost/metric windows to marina `image.tag` deploys and commits |
+| `github-fix-pr` | Clone a `devrev` repo in the workspace and open a `cost-fix/*` PR (`git` + REST API) |
+
+To add a service, create `agent/skills/cur-<service>/SKILL.md` and add its product code to the
+scope table in `cur-athena`. Add any other skill with YAML frontmatter (`name`, `description`) in
+`agent/skills/<name>/SKILL.md`, then redeploy.
 
 ## Shared memory (learning from past requests)
 
@@ -542,3 +228,267 @@ aws bedrock-agentcore list-memory-records --region us-west-2 \
 aws bedrock-agentcore delete-memory-record --region us-west-2 \
   --memory-id cost_investigator_stm-geZl5e2x3J --memory-record-id <id>
 ```
+
+## Getting started
+
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/) and Python 3.12
+- AWS CLI v2 with credentials for account `270149200236` (the scripts use the `hackathon` profile)
+- `zip`
+
+All resources are in `us-west-2`.
+
+### One-time AWS setup
+
+You only need this if the S3 bucket and IAM role don't exist yet.
+
+```bash
+export AWS_PROFILE=hackathon
+
+aws s3 mb s3://cost-agent-artifacts-270149200236 --region us-west-2
+aws s3 mb s3://cost-agent-user-artifacts-270149200236 --region us-west-2
+
+aws iam create-role --role-name cost-agent-runtime-role \
+  --assume-role-policy-document file://deploy/trust.json
+aws iam put-role-policy --role-name cost-agent-runtime-role \
+  --policy-name runtime \
+  --policy-document file://deploy/role-policy.json
+```
+
+#### Athena workgroup for CUR queries
+
+The agent queries the CUR table `hackathon_cur.cost_report` (Glue catalog, `us-west-2`) through a
+dedicated `cost-agent` workgroup. The workgroup uses Athena managed query results, so there is no
+results bucket and the runtime role needs no S3 permissions for results. It also caps each query
+at 20 GB scanned (about $0.10 at Athena's $5 per TB).
+
+The table has no partition by service, so every query reads the whole month for the columns it
+uses. In early October 2026 (10 days of data), a DynamoDB breakdown already scanned about 0.7 GB;
+a full month will be roughly three times that. Athena cancels any query that goes over the cap.
+
+```bash
+aws athena create-work-group --name cost-agent --region us-west-2 \
+  --configuration '{
+    "ManagedQueryResultsConfiguration": {"Enabled": true},
+    "EnforceWorkGroupConfiguration": true,
+    "BytesScannedCutoffPerQuery": 21474836480,
+    "PublishCloudWatchMetricsEnabled": true
+  }'
+```
+
+To change the cap on the existing workgroup (value in bytes):
+
+```bash
+aws athena update-work-group --work-group cost-agent --region us-west-2 \
+  --configuration-updates '{"BytesScannedCutoffPerQuery": 21474836480}'
+```
+
+`ManagedQueryResultsConfiguration` needs a recent AWS CLI. If yours rejects it, upgrade the CLI or
+turn on managed query results for the workgroup in the Athena console.
+
+The runtime role's Athena, Glue and CUR bucket permissions are in `deploy/role-policy.json`
+(statements `AthenaQuery`, `CurCatalog`, `CurDataList`, `CurDataRead`). The deploy workflow applies
+that file to the role on every merge to `main`, so change permissions there, not by hand.
+
+#### Session memory (AgentCore STM)
+
+Conversation turns are stored in AgentCore Memory STM (no long-term strategies),
+wired through `AgentCoreMemorySessionManager` in `agent/agent.py`.
+
+```bash
+# One-time (or reuse): creates cost_investigator_stm and writes deploy/build/memory.json
+uv run --with boto3 python deploy/create_memory.py
+```
+
+`deploy/deploy_runtime.py` sets `AGENTCORE_MEMORY_ID` / `AGENTCORE_ACTOR_ID`.
+IAM for CreateEvent/ListEvents/GetEvent/DeleteEvent is in `deploy/role-policy.json`
+(`AgentCoreMemoryStm`).
+
+### Build and deploy
+
+```bash
+export AWS_PROFILE=hackathon
+
+# 1. Build the zip (Linux ARM64 wheels + agent.py) and upload it to S3.
+#    Writes deploy/build/agent.zip and deploy/build/last_key.
+./deploy/package.sh
+
+# 2. Create the runtime, or update it if it already exists, and wait until it is ready.
+#    Writes deploy/build/runtime.json.
+uv run --with boto3 python deploy/deploy_runtime.py
+```
+
+`package.sh` uses the `BUCKET` and `KEY` environment variables if they are set, so you can upload
+somewhere else without editing the script. That bucket holds the code zip only. Files the agent
+generates for users go to `cost-agent-user-artifacts-270149200236` (see below).
+
+#### CI deploy (merge to main)
+
+`.github/workflows/deploy.yml` applies `deploy/role-policy.json` to `cost-agent-runtime-role`,
+then runs `package.sh` and `deploy_runtime.py`, on pushes to `main` that touch `agent/` or
+`deploy/` (and on manual `workflow_dispatch`). Re-applying an unchanged policy document has no
+effect on permissions.
+
+Add these repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` | Access key for an IAM user/role that can deploy (see below) |
+| `AWS_SECRET_ACCESS_KEY` | Matching secret key |
+
+The AWS principal behind those keys needs permission to:
+
+- `s3:PutObject` (and usually `s3:GetObject`) on `s3://cost-agent-artifacts-270149200236/*`
+- AgentCore control: create/update/get/list agent runtimes in `us-west-2`
+- `iam:PassRole` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
+- `iam:PutRolePolicy` on `arn:aws:iam::270149200236:role/cost-agent-runtime-role`
+
+### Invoke
+
+```bash
+uv run --with boto3 python deploy/invoke.py "List the workspace and say what is there."
+
+# Name one service per request:
+uv run --with boto3 python deploy/invoke.py "Which SQS queues changed most in cost over the last week, and why?"
+
+# Reuse a session to keep the same workspace (the ID must be at least 33 characters):
+uv run --with boto3 python deploy/invoke.py "Continue from your notes." session-<id-from-previous-call>
+
+# Optional third arg / AGENTCORE_USER_ID: runtimeUserId (not required for GitHub; PAT comes from Secrets Manager).
+uv run --with boto3 python deploy/invoke.py "Search github for marina" session-$(uuidgen | tr -d -) my-user
+```
+
+`invoke.py` reads the runtime ARN from `deploy/build/runtime.json`. On a fresh clone that file won't
+exist. You can either run `deploy_runtime.py` (which redeploys from `last_key`, so run `package.sh`
+first), or create the file by hand using the existing runtime's ARN:
+
+```bash
+aws bedrock-agentcore-control list-agent-runtimes --region us-west-2 \
+  --query "agentRuntimes[?agentRuntimeName=='cost_investigator'].agentRuntimeArn" --output text
+```
+
+```bash
+mkdir -p deploy/build
+echo '{"agentRuntimeArn": "<arn from above>"}' > deploy/build/runtime.json
+```
+
+### Configuration
+
+The runtime sets these environment variables (see `deploy_runtime.py`):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
+| `MODEL_ID` | `us.anthropic.claude-sonnet-5` | Bedrock model or inference profile |
+| `MAX_OUTPUT_TOKENS` | `16000` | Max tokens in one model response. A report is several `append_workspace_file` calls, one section each |
+| `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
+| `GITHUB_PAT_SECRET_ARN` | AgentCore-managed `github-pat` secret | Secrets Manager ARN for the GitHub PAT |
+| `GITHUB_PAT_SECRET_JSON_KEY` | `api_key_value` | JSON key inside that secret |
+| `SKILLS_DIR` | `<alongside agent.py>/skills` | Bundled Strands skills directory |
+| `ATHENA_REGION` | `us-west-2` | Region of the Athena workgroup and Glue catalog |
+| `ATHENA_DATABASE` | `hackathon_cur` | Glue database holding the CUR table |
+| `ATHENA_TABLE` | `cost_report` | CUR 2.0 table, partitioned by `billing_period` |
+| `ATHENA_WORKGROUP` | `cost-agent` | Workgroup with managed query results and a 20 GB per-query scan limit |
+| `ATHENA_TIMEOUT_S` | `120` | Seconds before `athena_query` stops a query |
+| `AGENT_LOG_LEVEL` | `INFO` | Level for the agent's own logs (agent, `github_fix`, `memory`), written to stdout and shipped to the runtime's CloudWatch log group |
+| `GRAFANA_MCP_URL` | `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp` | Grafana MCP server (streamable HTTP). Empty disables it |
+| `GRAFANA_MCP_SECRET_ARN` | `grafana-mcp` secret | Secrets Manager ARN for the AI gateway virtual key |
+| `GRAFANA_MCP_SECRET_JSON_KEY` | `x-litellm-api-key` | JSON key inside that secret |
+| `ARTIFACT_BUCKET` | `cost-agent-user-artifacts-270149200236` | Dedicated bucket for files the user can download |
+| `ARTIFACT_PREFIX` | `generated` | Key prefix inside that bucket |
+| `ARTIFACT_URL_TTL_S` | `86400` | Presigned URL lifetime in seconds (60 to 604800) |
+
+### Artifact downloads
+
+When the agent writes something the user should keep (a report, CSV or JSON export, HTML,
+chart, or investigation write-up), it builds the file one section at a time with
+`append_workspace_file`, then calls `publish_artifact`. A response that hits the output
+limit continues automatically, up to three more times, and appends the remaining sections.
+`publish_artifact` uploads the file to
+`s3://cost-agent-user-artifacts-270149200236/generated/<session-id>/<path>` and returns a
+presigned GET URL. The answer includes that URL, and the run also appends an "Artifact
+downloads" message so the link is in the response even if the model skips it.
+
+The bucket stays private. Anyone with the URL can download the object until the URL expires
+(one day by default). The link also dies when the runtime role credentials that signed it
+expire, if that happens first. Create the bucket with the one-time `aws s3 mb` command above
+before the first publish. The runtime role needs `s3:PutObject` and `s3:GetObject` on
+`arn:aws:s3:::cost-agent-user-artifacts-270149200236/*` (`UserArtifacts` in
+`deploy/role-policy.json`).
+
+## Repository layout
+
+```
+agent/
+  agent.py            Agent code and AgentCore entrypoint
+  artifacts.py        Uploads user-facing files to S3 and signs a download URL
+  requirements.txt    Python dependencies
+  skills/             Strands Agent Skills (SKILL.md packages), bundled into the runtime zip
+deploy/
+  package.sh          Builds the code zip and uploads it to S3
+  deploy_runtime.py   Creates or updates the AgentCore runtime
+  invoke.py           Calls the deployed runtime
+  trust.json          Trust policy for the runtime IAM role
+  role-policy.json    Permissions policy for the runtime IAM role
+architecture.html     Architecture diagrams (daily flow + phased design notes)
+cur-guide.html        Cost and Usage Report (CUR) guide
+```
+
+### Generated paths (not committed)
+
+These paths are listed in `.gitignore` because they are generated:
+
+| Path | What it is | How to recreate it |
+| --- | --- | --- |
+| `agent/.venv/` | Local Python 3.12 virtual environment | `cd agent && uv venv --python 3.12 && uv pip install -r requirements.txt` |
+| `deploy/build/pkg/` | Linux ARM64 dependencies plus `agent.py`, unzipped | `deploy/package.sh` |
+| `deploy/build/agent.zip` | The code zip uploaded to S3 | `deploy/package.sh` |
+| `deploy/build/last_key` | S3 key of the most recent upload, read by `deploy_runtime.py` | `deploy/package.sh` |
+| `deploy/build/runtime.json` | ARN, version and status of the deployed runtime, read by `invoke.py` | `deploy/deploy_runtime.py` |
+
+`package.sh` deletes and rebuilds the whole `deploy/build/` folder each time it runs.
+
+## Integrations
+
+### Local chat UI and workflow proxy
+
+[`ui/README.md`](ui/README.md) covers the HTTP proxy (including async workflow invoke), and the
+local server: `uv run --with boto3 python ui/local_server.py` → http://127.0.0.1:8787.
+
+### GitHub credential (Secrets Manager)
+
+The agent reads the GitHub PAT with `secretsmanager:GetSecretValue` (see `GithubPatSecret` in
+`deploy/role-policy.json`). By default it uses the secret created when you stored the PAT in
+AgentCore Identity (JSON field `api_key_value`):
+
+```bash
+aws bedrock-agentcore-control create-api-key-credential-provider \
+  --name github-pat --api-key "<token>" --region us-west-2
+# Note the apiKeySecretArn from the response → GITHUB_PAT_SECRET_ARN
+```
+
+Or create any Secrets Manager secret with `{"api_key_value":"<pat>"}` and point
+`GITHUB_PAT_SECRET_ARN` at it. Do not put the PAT in the code zip or plain env vars.
+
+`github-fix-pr` authenticates `git clone` / `git fetch` / `git push` with a short-lived
+`https://x-access-token:<pat>@github.com/...` remote, then rewrites `origin` back to the
+public HTTPS URL so the PAT is not left in `.git/config`. PRs use the GitHub REST API with
+`Authorization: Bearer`. **git** must be on the AgentCore runtime PATH.
+
+### Grafana MCP server
+
+Disabled in default deploy (`GRAFANA_MCP_URL` empty in `deploy_runtime.py` and `agent.py`). To
+attach it, set `GRAFANA_MCP_URL` to `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`.
+The agent then connects to Grafana through the DevRev AI gateway, and each request sends the
+header `x-litellm-api-key: Bearer <virtual key>`.
+
+- The virtual key is in the Secrets Manager secret `grafana-mcp`, under the JSON key
+  `x-litellm-api-key`. It can be stored with or without the `Bearer ` prefix. The role reads it via
+  `GrafanaMcpSecret` in `deploy/role-policy.json`.
+- The gateway exposes 61 tools, named `grafana-<tool>` (e.g. `grafana-query_prometheus`). They
+  include write actions such as creating incidents, annotations and datasources, and installing
+  plugins; nothing filters them yet.
+- A new MCP connection is opened for each invocation and closed when the agent finishes.
+- If the secret can't be read or the server can't be reached, the agent logs a warning and runs
+  without the Grafana tools.
