@@ -11,8 +11,8 @@ and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persisten
 
 ## End-to-end flow
 
-AWS delivers billing data once per day. A DevRev workflow starts the cost investigator on a
-schedule, waits for the async run to finish, and posts the report to Slack.
+AWS delivers billing data once per day. A DevRev workflow on a schedule starts the cost
+investigator, waits for the run to finish, and posts the report to Slack.
 
 ```mermaid
 flowchart TB
@@ -27,11 +27,9 @@ flowchart TB
 
   subgraph devrev [DevRev]
     wf["Scheduled workflow"]
-    hook["Catch finished report"]
-    slack["Slack channel"]
-    wf --> hook
-    hook --> slack
   end
+
+  slack["Slack channel"]
 
   subgraph agentcore [Agent runtime]
     api["Agent API"]
@@ -41,18 +39,17 @@ flowchart TB
 
   wf -->|"Kick off today's analysis"| api
   agent -->|"Read costs and metrics"| query
-  agent -->|"Deliver report when done"| hook
+  agent -->|"Deliver report when done"| wf
+  wf -->|"Post daily report"| slack
 ```
-
-Daily run in more detail:
 
 | Step | What happens |
 | --- | --- |
 | 1 | AWS refreshes the daily cost export into object storage. |
-| 2 | A fixed demo snapshot of usage metrics lives alongside it so investigations can compare spend to traffic. |
-| 3 | On schedule, DevRev starts the agent with today's question and tells it where to send the answer when finished. |
-| 4 | The agent runs in the background, queries cost and metrics, and returns the full written report to DevRev. |
-| 5 | DevRev posts the report to Slack (plus download links if the agent attached files). |
+| 2 | **Demo:** usage metrics are a scraped snapshot in storage. **Production:** the CloudWatch skill supplies live metrics. |
+| 3 | The DevRev workflow starts the agent with today's question and where to send the answer when finished. |
+| 4 | The agent runs in the background, queries cost and metrics, and returns the report to the workflow. |
+| 5 | The workflow posts the report to Slack (plus download links if the agent attached files). |
 
 ### AWS × DevRev hackathon stack
 
@@ -70,21 +67,15 @@ Services that **power** the demo (not the AWS products whose bills the agent ana
 | **AWS Secrets Manager** | GitHub PAT and optional Grafana gateway credentials (never in code). |
 | **AWS IAM** | Runtime role permissions for Bedrock, Athena, S3, secrets, and memory. |
 | **Amazon CloudWatch Logs** | AgentCore runtime logs for debugging. |
-| **AWS X-Ray** | Optional tracing from the runtime. |
-| **Amazon CloudWatch** | Runtime telemetry; demo usage metrics were scraped from CloudWatch into S3 (agent queries Athena, not the live API). |
-| **AWS Lambda** + **Amazon API Gateway (HTTP)** | Thin proxy DevRev calls to start the agent and return immediately while work continues. |
-| **Amazon CloudFront** | Optional CDN in front of the browser chat UI (`ui/`); not used for the daily Slack path. |
+| **Amazon CloudWatch** | Runtime telemetry; demo metrics scraped into storage; production via the CloudWatch skill. |
+| **AWS Lambda** + **Amazon API Gateway (HTTP)** | Thin proxy the workflow calls to start the agent and return while work continues. |
+| **Amazon CloudFront** | Optional CDN for the browser chat UI (`ui/`); not used for the daily Slack path. |
 
 | DevRev capability | Purpose in this architecture |
 | --- | --- |
-| **Scheduled workflow** | Runs the daily cost investigation on a clock. |
-| **Agent / session integration** | Sends the prompt and receives the finished report from the agent. |
-| **Slack** | Posts the daily write-up to the team channel. |
-| **AI gateway (optional)** | Routes **Grafana MCP** when custom app metrics are enabled. |
+| **Scheduled workflow** | Daily trigger; starts the agent; receives the report; posts to Slack. |
 
-The agent’s skills also describe how to read **SQS, DynamoDB, EC2, S3, SNS, Lambda, ElastiCache, and Bedrock** spend from CUR—that is the *subject* of analysis, not the hosting stack.
-
-API field names and JSON shapes: [`ui/README.md`](ui/README.md).
+Diagrams: [`architecture.html`](architecture.html) (**Daily cost report**). Workflow invoke and webhook JSON: [`ui/README.md`](ui/README.md).
 
 ### Inside the agent
 
@@ -112,34 +103,7 @@ flowchart LR
   model --> out["Written report and optional attachments"]
 ```
 
-| Source | How the agent uses it |
-| --- | --- |
-| CUR | `athena_query` against Parquet-backed `cost_report`; scope and SQL patterns come from `cur-athena` and per-service `cur-*` skills. |
-| CloudWatch (demo) | Same `athena_query` tool against `cloudwatch_metrics`; no live CloudWatch API. Load `cloudwatch-metrics` before citing metric values. |
-| Grafana | Optional MCP server (`GRAFANA_MCP_URL`); custom app metrics via `grafana-*` tools through the DevRev AI gateway. Off by default in deploy. |
-| Code / deploys | `github-code-lookup`, `marina-deployments`, and optionally `github-fix-pr` for fix PRs. |
-
-Bundled skills (load with the `skills` tool before acting):
-
-| Skill | When to use |
-| --- | --- |
-| `cur-athena` | Before any cost query: CUR table, columns, cost rules, one-service scope |
-| `cur-sqs` | SQS request mix, batching, empty receives, top drivers |
-| `cur-dynamodb` | DynamoDB capacity mode, storage, PITR, Streams |
-| `cur-ec2` | EC2, EBS, NAT, public IPv4, transfer |
-| `cur-s3` | Storage class, requests, transfer, retrieval fees |
-| `cur-sns` | Publishes, deliveries, fan-out |
-| `cur-lambda` | GB-seconds, invocations, provisioned concurrency |
-| `cur-elasticache` | Node-hours, replicas, backups |
-| `cur-bedrock` | Token lines, marketplace models |
-| `cloudwatch-metrics` | Query `cloudwatch_metrics` for October 2026 daily values |
-| `github-code-lookup` | Search `devrev` repos for definitions and callers |
-| `marina-deployments` | Correlate cost windows to `marina` `image.tag` deploys |
-| `github-fix-pr` | Clone, edit, open `cost-fix/*` PRs |
-
-The same table is repeated under [Agent skills](#agent-skills) with slightly more detail.
-
-A visual version of this flow lives in [`architecture.html`](architecture.html) (section **Daily cost report**).
+Playbooks, data sources, and the `athena_query` tool: [Agent skills](#agent-skills). Runtime env vars: [Configuration](#configuration).
 
 ## Layout
 
@@ -249,12 +213,7 @@ IAM for CreateEvent/ListEvents/GetEvent/DeleteEvent is in `deploy/role-policy.js
 
 ## Local chat UI
 
-See [`ui/README.md`](ui/README.md). Quick start:
-
-```bash
-uv run --with boto3 python ui/local_server.py
-# http://127.0.0.1:8787
-```
+[`ui/README.md`](ui/README.md) covers the proxy, async workflow invoke, and local server (`uv run --with boto3 python ui/local_server.py` → http://127.0.0.1:8787).
 
 ## Build and deploy
 
@@ -368,25 +327,23 @@ before the first publish. The runtime role needs `s3:PutObject` and `s3:GetObjec
 `arn:aws:s3:::cost-agent-user-artifacts-270149200236/*` (`UserArtifacts` in
 `deploy/role-policy.json`).
 
-## Athena query tool
-
-`athena_query(sql, max_rows=200)` in `agent/agent.py` runs one read-only statement and returns the
-rows as JSON with the query ID and MB scanned. It accepts only `SELECT`, `WITH`, `DESCRIBE` and
-`SHOW`, requires `SELECT`/`WITH` queries to filter on `billing_period`, and returns at most 500 rows
-(200 by default), with a note telling the agent to aggregate further when results are cut off.
-
-Restricting a query to one service is left to the skills, not the tool.
-
 ## Agent skills
 
 Strands [Agent Skills](https://strandsagents.com/docs/user-guide/concepts/plugins/skills/) live under
 `agent/skills/<skill-name>/SKILL.md`. `package.sh` copies that tree into the runtime zip. At invoke
-time the agent registers them with `AgentSkills` and can load full instructions on demand via the
-`skills` tool.
+time the agent registers them with `AgentSkills` and loads instructions on demand via the `skills`
+tool. Session-specific skills may also live under `/mnt/workspace/skills/`.
 
-Also loaded if present: `/mnt/workspace/skills/` (session-specific skills written into the workspace).
+**Data sources:** billing lines via `athena_query` and `cur-athena` / `cur-*` skills (table
+`hackathon_cur.cost_report`). **Demo** metrics: `cloudwatch-metrics` skill over the Athena view
+`cloudwatch_metrics`. **Production:** CloudWatch skill for live metrics (planned). Code and deploys:
+`github-code-lookup`, `marina-deployments`; fix PRs: `github-fix-pr`. Optional app metrics: [Grafana MCP](#grafana-mcp-server).
 
-Bundled today:
+**`athena_query`:** read-only SQL in `agent/agent.py` (`SELECT` / `WITH` / `DESCRIBE` / `SHOW` only;
+`billing_period` required on cost queries; default 200 rows, max 500). Service scope comes from
+skills, not the tool.
+
+**Bundled skills:**
 
 | Skill | When to use |
 | --- | --- |
@@ -432,12 +389,8 @@ public HTTPS URL so the PAT is not left in `.git/config`. PRs use the GitHub RES
 
 ## Grafana MCP server
 
-**Off for now.** `GRAFANA_MCP_URL` is empty in `deploy_runtime.py` and in the `agent.py`
-default. Metrics come from the `cloudwatch_metrics` Athena view instead: it is the same dev
-account as the CUR data and gives the same numbers every run. Grafana's `cloudwatch`
-datasource has no region, credentials or role configured, so its account is unknown.
-
-To attach it, set `GRAFANA_MCP_URL` to `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`.
+Disabled in default deploy (`GRAFANA_MCP_URL` empty in `deploy_runtime.py` and `agent.py`). To
+attach it, set `GRAFANA_MCP_URL` to `https://ai-gateway.dev.devrev-eng.ai/grafana/mcp`.
 The agent then connects to Grafana through the DevRev AI gateway, and each request sends the
 header `x-litellm-api-key: Bearer <virtual key>`.
 
@@ -450,14 +403,6 @@ header `x-litellm-api-key: Bearer <virtual key>`.
 - A new MCP connection is opened for each invocation and closed when the agent finishes.
 - If the secret can't be read or the server can't be reached, the agent logs a warning and runs
   without the Grafana tools.
-
-## Status
-
-Workspace tools, GitHub code tools (Secrets Manager PAT), the `athena_query` tool, the CUR
-skills, the `cloudwatch-metrics` skill, and `publish_artifact` (presigned download URLs) are in
-place. October 2026 daily metrics are the Athena view `cloudwatch_metrics`. The Grafana MCP
-server is supported but switched off. Still to add in `agent/agent.py`: a live `get_cloudwatch`
-tool and `describe_resource`.
 
 ## How the agent handles requests
 
