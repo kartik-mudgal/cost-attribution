@@ -98,6 +98,29 @@ The runtime role's Athena, Glue and CUR bucket permissions are in `deploy/role-p
 (statements `AthenaQuery`, `CurCatalog`, `CurDataList`, `CurDataRead`). The deploy workflow applies
 that file to the role on every merge to `main`, so change permissions there, not by hand.
 
+## AgentCore Memory (short-term turns)
+
+Conversation turns are stored in AgentCore Memory STM (no long-term strategies),
+wired through `AgentCoreMemorySessionManager` in `agent/agent.py`.
+
+```bash
+# One-time (or reuse): creates cost_investigator_stm and writes deploy/build/memory.json
+uv run --with boto3 python deploy/create_memory.py
+```
+
+`deploy/deploy_runtime.py` sets `AGENTCORE_MEMORY_ID` / `AGENTCORE_ACTOR_ID`.
+IAM for CreateEvent/ListEvents/GetEvent/DeleteEvent is in `deploy/role-policy.json`
+(`AgentCoreMemoryStm`).
+
+## Local chat UI
+
+See [`ui/README.md`](ui/README.md). Quick start:
+
+```bash
+uv run --with boto3 python ui/local_server.py
+# http://127.0.0.1:8787
+```
+
 ## Build and deploy
 
 ```bash

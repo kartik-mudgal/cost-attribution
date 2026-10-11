@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AG-UI Sample — Agent-User Interface Protocol</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1b26;
+            --surface2: #24253a;
+            --border: #2f3044;
+            --text: #c8d0e0;
+            --text-dim: #7a7f96;
+            --accent: #7aa2f7;
+            --green: #9ece6a;
+            --yellow: #e0af68;
+            --red: #f7768e;
+            --purple: #bb9af7;
+            --cyan: #7dcfff;
+            --orange: #ff9e64;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .header {
+            padding: 12px 20px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 16px; color: var(--accent); font-weight: 600; }
+        .header .status {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: var(--surface2);
+        }
+        .header .status.connected { color: var(--green); }
+        .header .status.streaming { color: var(--yellow); animation: pulse 1s infinite; }
+        .header .status.error { color: var(--red); }
+
+        @keyframes pulse { 50% { opacity: 0.5; } }
+
+        /* Main layout */
+        .main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            overflow: hidden;
+        }
+
+        /* Chat panel */
+        .chat-panel {
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border);
+        }
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .message {
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .message.user {
+            background: var(--surface2);
+            border-left: 3px solid var(--accent);
+        }
+        .message.assistant {
+            background: var(--surface);
+            border-left: 3px solid var(--green);
+        }
+        .message .role {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-dim);
+            margin-bottom: 6px;
+        }
+
+        /* Tool call display */
+        .tool-call {
+            margin: 8px 0;
+            padding: 10px 14px;
+            background: var(--surface2);
+            border-radius: 6px;
+            border-left: 3px solid var(--yellow);
+            font-size: 13px;
+        }
+        .tool-call .tool-name {
+            color: var(--yellow);
+            font-weight: 600;
+        }
+        .tool-call .tool-args {
+            color: var(--text-dim);
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        .tool-call .tool-result {
+            color: var(--green);
+            font-size: 12px;
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid var(--border);
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        /* Reasoning display */
+        .reasoning {
+            margin: 8px 0;
+            padding: 8px 12px;
+            background: rgba(187, 154, 247, 0.08);
+            border-radius: 6px;
+            border-left: 3px solid var(--purple);
+            font-size: 12px;
+            color: var(--purple);
+            font-style: italic;
+        }
+
+        /* Input area */
+        .input-area {
+            padding: 12px 16px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 8px;
+        }
+        .input-area input {
+            flex: 1;
+            padding: 10px 14px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+        }
+        .input-area input:focus { border-color: var(--accent); }
+        .input-area button {
+            padding: 10px 20px;
+            background: var(--accent);
+            color: var(--bg);
+            border: none;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .input-area button:hover:not(:disabled) { filter: brightness(1.1); }
+
+        /* Side panel */
+        .side-panel {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .panel-section {
+            border-bottom: 1px solid var(--border);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-section.events-panel { flex: 1; }
+        .panel-section.state-panel { max-height: 35%; }
+        .panel-header {
+            padding: 8px 14px;
+            background: var(--surface);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-dim);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .panel-header .count {
+            background: var(--surface2);
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 10px;
+        }
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        /* Event log */
+        .event-item {
+            padding: 5px 8px;
+            margin-bottom: 2px;
+            font-size: 11px;
+            border-radius: 4px;
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+        }
+        .event-item:hover { background: var(--surface2); }
+        .event-type {
+            font-weight: 600;
+            min-width: 140px;
+            flex-shrink: 0;
+        }
+        .event-type.lifecycle { color: var(--cyan); }
+        .event-type.text { color: var(--green); }
+        .event-type.tool { color: var(--yellow); }
+        .event-type.state { color: var(--orange); }
+        .event-type.reasoning { color: var(--purple); }
+        .event-data {
+            color: var(--text-dim);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* State view */
+        .state-json {
+            font-size: 12px;
+            color: var(--text-dim);
+            white-space: pre-wrap;
+            padding: 8px;
+        }
+
+        /* Transport toggle */
+        .transport-toggle {
+            display: flex;
+            gap: 4px;
+            background: var(--surface2);
+            padding: 3px;
+            border-radius: 6px;
+        }
+        .transport-toggle button {
+            padding: 4px 10px;
+            font-size: 11px;
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            cursor: pointer;
+            border-radius: 4px;
+            font-family: inherit;
+        }
+        .transport-toggle button.active {
+            background: var(--accent);
+            color: var(--bg);
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>Cost Investigator</h1>
+    <div style="display:flex;gap:12px;align-items:center;">
+        <div class="transport-toggle">
+            <button id="btn-sse" class="active" onclick="setTransport('sse')">SSE</button>
+            <button id="btn-ws" onclick="setTransport('ws')">WebSocket</button>
+        </div>
+        <code id="session-chip" title="AgentCore runtimeSessionId (workspace persists across turns)" style="font-size:11px;color:var(--text-dim);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></code>
+        <button id="btn-new-session" onclick="resetSession()" style="font-size:11px;padding:4px 8px;cursor:pointer;">New session</button>
+        <div id="status" class="status connected">idle</div>
+    </div>
+</div>
+
+<div class="main">
+    <div class="chat-panel">
+        <div class="messages" id="messages"></div>
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="Send a message..."
+                   onkeydown="if(event.key==='Enter')sendMessage()" autofocus />
+            <button id="send-btn" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <div class="side-panel">
+        <div class="panel-section events-panel">
+            <div class="panel-header">
+                Events <span class="count" id="event-count">0</span>
+            </div>
+            <div class="panel-content" id="events-log"></div>
+        </div>
+        <div class="panel-section state-panel">
+            <div class="panel-header">Agent State</div>
+            <div class="panel-content">
+                <div class="state-json" id="state-view">{ "status": "idle" }</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ─── Config ─────────────────────────────────────────────────────────────────
+// API_BASE and WS_URL are injected at deploy time; fall back to same-origin for local dev
+const API_BASE = window.__API_BASE || window.location.origin;
+const WS_URL = window.__WS_URL || `${window.location.origin.replace('http', 'ws')}/ws`;
+// Local `ui/local_server.py` only implements SSE; WebSocket needs the AWS proxy stack.
+let transport = 'sse';
+let ws = null;
+let threadId = null;
+let eventCount = 0;
+let currentAssistantMsg = null;
+let currentToolCalls = {};
+let currentReasoning = null;
+let agentState = {};
+let isProcessing = false;
+
+const SESSION_KEY = 'costAgentSessionId';
+
+function sessionIdFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    return (
+        params.get('sessionId') ||
+        params.get('session_id') ||
+        params.get('existingSessionId') ||
+        ''
+    );
+}
+
+function syncSessionUrl(id) {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('sessionId') === id) return;
+    url.searchParams.set('sessionId', id);
+    // Drop aliases so the shareable URL stays clean.
+    url.searchParams.delete('session_id');
+    url.searchParams.delete('existingSessionId');
+    history.replaceState({}, '', url);
+}
+
+function sessionId() {
+    let id = sessionIdFromUrl();
+    if (!id || id.length < 33) {
+        id = localStorage.getItem(SESSION_KEY) || '';
+    }
+    if (!id || id.length < 33) {
+        id = 'session-' + crypto.randomUUID().replace(/-/g, '');
+    }
+    localStorage.setItem(SESSION_KEY, id);
+    threadId = id;
+    const chip = document.getElementById('session-chip');
+    if (chip) chip.textContent = id;
+    syncSessionUrl(id);
+    return id;
+}
+
+function resetSession() {
+    localStorage.removeItem(SESSION_KEY);
+    threadId = null;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('sessionId');
+    url.searchParams.delete('session_id');
+    url.searchParams.delete('existingSessionId');
+    history.replaceState({}, '', url);
+    sessionId();
+    document.getElementById('messages').innerHTML = '';
+    document.getElementById('events-log').innerHTML = '';
+    eventCount = 0;
+    document.getElementById('event-count').textContent = '0';
+    setStatus('connected', 'new session');
+}
+
+// Bind session from ?sessionId=… if present, else reuse/create one.
+sessionId();
+
+// ─── Transport ──────────────────────────────────────────────────────────────
+function setTransport(t) {
+    transport = t;
+    document.getElementById('btn-sse').classList.toggle('active', t === 'sse');
+    document.getElementById('btn-ws').classList.toggle('active', t === 'ws');
+
+    if (t === 'ws') connectWebSocket();
+    else if (ws) { ws.close(); ws = null; }
+}
+
+function connectWebSocket() {
+    if (ws) ws.close();
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => setStatus('connected', 'ws connected');
+    ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
+    ws.onclose = () => setStatus('error', 'ws disconnected');
+    ws.onerror = () => setStatus('error', 'ws error');
+}
+
+// ─── Send Message ───────────────────────────────────────────────────────────
+async function sendMessage() {
+    const input = document.getElementById('user-input');
+    const msg = input.value.trim();
+    if (!msg || isProcessing) return;
+
+    input.value = '';
+    isProcessing = true;
+    document.getElementById('send-btn').disabled = true;
+    addUserMessage(msg);
+
+    if (transport === 'sse') {
+        await sendSSE(msg);
+    } else {
+        sendWS(msg);
+    }
+}
+
+async function sendSSE(message) {
+    setStatus('streaming', 'streaming...');
+    try {
+        const response = await fetch(`${API_BASE}/invocations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message,
+                prompt: message,
+                session_id: sessionId(),
+                thread_id: threadId || sessionId(),
+            }),
+        });
+
+        threadId = response.headers.get('X-Thread-Id') || threadId || sessionId();
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            // Split on \n\n (standard SSE) or handle single \n separated data lines
+            const parts = buffer.split('\n');
+            buffer = '';
+
+            for (const part of parts) {
+                const trimmed = part.trim();
+                if (trimmed.startsWith('data: ')) {
+                    try {
+                        const event = JSON.parse(trimmed.slice(6));
+                        handleEvent(event);
+                    } catch (e) {}
+                }
+            }
+        }
+    } catch (e) {
+        setStatus('error', 'connection error');
+    }
+    finishProcessing();
+}
+
+function sendWS(message) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connectWebSocket();
+        setTimeout(() => sendWS(message), 500);
+        return;
+    }
+    setStatus('streaming', 'streaming...');
+    const sid = threadId || sessionId();
+    threadId = sid;
+    ws.send(JSON.stringify({ message, prompt: message, session_id: sid, thread_id: sid }));
+}
+
+function finishProcessing() {
+    isProcessing = false;
+    document.getElementById('send-btn').disabled = false;
+    document.getElementById('user-input').focus();
+}
+
+// ─── Event Handler ──────────────────────────────────────────────────────────
+function handleEvent(event) {
+    logEvent(event);
+
+    switch (event.type) {
+        // Lifecycle
+        case 'RUN_STARTED':
+            setStatus('streaming', 'agent running');
+            break;
+        case 'RUN_FINISHED':
+            setStatus('connected', 'idle');
+            currentAssistantMsg = null;
+            if (transport === 'ws') finishProcessing();
+            break;
+        case 'RUN_ERROR':
+            setStatus('error', event.error?.message || 'error');
+            addErrorMessage(event.error?.message || 'Unknown error');
+            if (transport === 'ws') finishProcessing();
+            break;
+        case 'STEP_STARTED':
+            setStatus('streaming', event.stepName || 'processing...');
+            break;
+        case 'STEP_FINISHED':
+            break;
+
+        // Text (Start-Content-End)
+        case 'TEXT_MESSAGE_START':
+            currentAssistantMsg = createAssistantMessage(event.messageId);
+            break;
+        case 'TEXT_MESSAGE_CONTENT':
+            if (currentAssistantMsg) {
+                appendToMessage(currentAssistantMsg, event.delta);
+            }
+            break;
+        case 'TEXT_MESSAGE_END':
+            currentAssistantMsg = null;
+            break;
+
+        // Tool Calls (Start-Args-End-Result)
+        case 'TOOL_CALL_START':
+            currentToolCalls[event.toolCallId] = createToolCall(event.toolCallId, event.toolName);
+            break;
+        case 'TOOL_CALL_ARGS':
+            if (currentToolCalls[event.toolCallId]) {
+                appendToolArgs(currentToolCalls[event.toolCallId], event.delta);
+            }
+            break;
+        case 'TOOL_CALL_END':
+            break;
+        case 'TOOL_CALL_RESULT':
+            if (currentToolCalls[event.toolCallId]) {
+                showToolResult(currentToolCalls[event.toolCallId], event.result);
+                delete currentToolCalls[event.toolCallId];
+            }
+            break;
+
+        // State (Snapshot-Delta)
+        case 'STATE_SNAPSHOT':
+            agentState = event.snapshot || {};
+            updateStateView();
+            break;
+        case 'STATE_DELTA':
+            Object.assign(agentState, event.delta || {});
+            updateStateView();
+            break;
+        case 'MESSAGES_SNAPSHOT':
+            break;
+
+        // Reasoning (Start-Content-End)
+        case 'REASONING_START':
+            currentReasoning = createReasoning(event.reasoningId);
+            break;
+        case 'REASONING_MESSAGE':
+            if (currentReasoning) appendToReasoning(currentReasoning, event.delta);
+            break;
+        case 'REASONING_END':
+            currentReasoning = null;
+            break;
+
+        case 'CONNECTED':
+            threadId = event.threadId;
+            setStatus('connected', 'ws connected');
+            break;
+    }
+}
+
+// ─── UI Helpers ─────────────────────────────────────────────────────────────
+function setStatus(cls, text) {
+    const el = document.getElementById('status');
+    el.className = 'status ' + cls;
+    el.textContent = text;
+}
+
+function addUserMessage(text) {
+    const el = document.createElement('div');
+    el.className = 'message user';
+    el.innerHTML = `<div class="role">You</div>${escapeHtml(text)}`;
+    document.getElementById('messages').appendChild(el);
+    scrollMessages();
+}
+
+function createAssistantMessage(id) {
+    const el = document.createElement('div');
+    el.className = 'message assistant';
+    el.id = `msg-${id}`;
+    el.innerHTML = `<div class="role">Assistant</div><span class="content"></span>`;
+    document.getElementById('messages').appendChild(el);
+    scrollMessages();
+    return el;
+}
+
+function appendToMessage(el, delta) {
+    const content = el.querySelector('.content');
+    if (content) content.textContent += delta;
+    scrollMessages();
+}
+
+function createToolCall(id, name) {
+    const el = document.createElement('div');
+    el.className = 'tool-call';
+    el.id = `tc-${id}`;
+    el.innerHTML = `<div class="tool-name">Tool: ${escapeHtml(name)}</div><div class="tool-args"></div>`;
+    document.getElementById('messages').appendChild(el);
+    scrollMessages();
+    return el;
+}
+
+function appendToolArgs(el, delta) {
+    const args = el.querySelector('.tool-args');
+    if (args) args.textContent += delta;
+}
+
+function showToolResult(el, result) {
+    const resultEl = document.createElement('div');
+    resultEl.className = 'tool-result';
+    resultEl.textContent = JSON.stringify(result, null, 2);
+    el.appendChild(resultEl);
+    scrollMessages();
+}
+
+function createReasoning(id) {
+    const el = document.createElement('div');
+    el.className = 'reasoning';
+    el.id = `reason-${id}`;
+    document.getElementById('messages').appendChild(el);
+    scrollMessages();
+    return el;
+}
+
+function appendToReasoning(el, delta) {
+    el.textContent += delta;
+    scrollMessages();
+}
+
+function addErrorMessage(text) {
+    const el = document.createElement('div');
+    el.className = 'message assistant';
+    el.innerHTML = `<div class="role" style="color:var(--red)">Error</div><span style="color:var(--red)">${escapeHtml(text)}</span>`;
+    document.getElementById('messages').appendChild(el);
+    scrollMessages();
+}
+
+function updateStateView() {
+    document.getElementById('state-view').textContent = JSON.stringify(agentState, null, 2);
+}
+
+function logEvent(event) {
+    eventCount++;
+    document.getElementById('event-count').textContent = eventCount;
+
+    // Only show meaningful events in the log — skip noise
+    // Only show key events — text streams in the chat panel, not here
+    const show = ['RUN_STARTED', 'RUN_FINISHED', 'RUN_ERROR',
+                  'REASONING_MESSAGE',
+                  'TOOL_CALL_START', 'TOOL_CALL_ARGS', 'TOOL_CALL_RESULT',
+                  'STATE_SNAPSHOT', 'STATE_DELTA'];
+    if (!show.includes(event.type)) return;
+
+    const log = document.getElementById('events-log');
+    const el = document.createElement('div');
+    el.className = 'event-item';
+
+    let typeClass = 'lifecycle';
+    if (event.type.startsWith('TEXT_')) typeClass = 'text';
+    else if (event.type.startsWith('TOOL_')) typeClass = 'tool';
+    else if (event.type.startsWith('STATE_') || event.type === 'MESSAGES_SNAPSHOT') typeClass = 'state';
+    else if (event.type.startsWith('REASONING_')) typeClass = 'reasoning';
+
+    const summary = getEventSummary(event);
+    el.innerHTML = `<span class="event-type ${typeClass}">${event.type}</span><span class="event-data">${escapeHtml(summary)}</span>`;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+}
+
+function getEventSummary(event) {
+    switch (event.type) {
+        case 'TEXT_MESSAGE_CONTENT': return event.delta || '';
+        case 'TOOL_CALL_START': return event.toolName || '';
+        case 'TOOL_CALL_ARGS': return event.delta?.substring(0, 40) || '';
+        case 'TOOL_CALL_RESULT': return 'result received';
+        case 'STATE_DELTA': return JSON.stringify(event.delta || {}).substring(0, 50);
+        case 'REASONING_MESSAGE': return event.delta || '';
+        case 'STEP_STARTED': return event.stepName || '';
+        case 'RUN_ERROR': return event.error?.message || '';
+        default: return '';
+    }
+}
+
+function scrollMessages() {
+    const el = document.getElementById('messages');
+    el.scrollTop = el.scrollHeight;
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Auto-connect WebSocket only when that transport is selected
+if (transport === 'ws') connectWebSocket();
+</script>
+</body>
+</html>

@@ -44,6 +44,9 @@ spec = dict(
         # Secrets Manager ARN for the AI gateway virtual key (JSON key x-litellm-api-key).
         "GRAFANA_MCP_SECRET_ARN": "arn:aws:secretsmanager:us-west-2:270149200236:secret:grafana-mcp-csUlmY",
         "GRAFANA_MCP_SECRET_JSON_KEY": "x-litellm-api-key",
+        # Short-term conversational turns (AgentCore Memory STM, no LTM strategies).
+        "AGENTCORE_MEMORY_ID": "cost_investigator_stm-geZl5e2x3J",
+        "AGENTCORE_ACTOR_ID": "cost-investigator",
     },
     lifecycleConfiguration={"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
 )
