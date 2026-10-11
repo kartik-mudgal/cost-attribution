@@ -393,7 +393,7 @@ async function handleHTTP(event) {
         webhook_url: webhookUrl,
         message: runError
           ? null
-          : "Investigation started. Report body will POST to webhook_url when ready.",
+          : "Investigation started. Agent will call post_async_webhook with the full body.",
         markdown: textParts.join(""),
         error: runError,
       }),

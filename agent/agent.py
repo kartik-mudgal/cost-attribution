@@ -35,8 +35,8 @@ DevRev issues use devrev_create_issue with a PAT from Secrets Manager (DEVREV_PA
 
 Async runs (payload ``{"async": true, "webhook_url": "https://..."}``) return
 immediately; the investigation continues in a background thread (AgentCore async
-task). When finished the agent calls notify_report_ready, which POSTs the full
-report body to the caller-provided webhook_url.
+task). When finished the agent must call post_async_webhook, which POSTs the full
+response/report body to the caller-provided webhook_url.
 """
 import asyncio
 import base64
@@ -155,6 +155,9 @@ _artifact_session: contextvars.ContextVar[str] = contextvars.ContextVar(
 _report_webhook_url: contextvars.ContextVar[str] = contextvars.ContextVar(
     "report_webhook_url", default=""
 )
+_async_webhook_enabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "async_webhook_enabled", default=False
+)
 
 SYSTEM_PROMPT = f"""You analyse AWS cost for DevRev's dev account (020040093233) and recommend fixes. Services
 covered: SQS, DynamoDB, EC2 (including EBS, NAT and public IPv4), S3, SNS, Lambda,
@@ -246,19 +249,37 @@ append_workspace_file, one section per call, using the answer's sections: verdic
 checked, then each finding, then not an issue, then totals. Cite query ids and figures in
 evidence. Do not paste raw query rows into the file, and do not put the whole report in one
 call. After the last section, call publish_artifact once. Include each download_url in the
-answer and say that it expires after expires_in_seconds. Never invent a download URL.
-
-When the report is finished (especially for async / workflow runs), call
-notify_report_ready once with the entire report markdown as body — the full file
-contents, not a summary or truncated excerpt. That POSTs the complete body to the
-webhook_url supplied on the invoke request."""
+answer and say that it expires after expires_in_seconds. Never invent a download URL."""
 
 _CONTINUE_REPORT = (
     "The previous response hit the output limit and was cut off. Continue the same report. "
     "Call append_workspace_file once per remaining section (verdict and scope checked, each "
     "finding, not an issue, totals). Do not repeat sections already in the file. "
+    "Do not paste raw query rows. When the file is complete, call publish_artifact once."
+)
+
+# Appended only when payload has async=true. post_async_webhook is the only delivery path.
+ASYNC_SYSTEM_PROMPT = """
+
+ASYNC INVOKE — WEBHOOK REQUIRED (this run)
+async=true was set and webhook_url was provided. You have the post_async_webhook tool.
+Your last action MUST be post_async_webhook. That tool POSTs body to the caller's webhook.
+Rules:
+1. Complete the user's request (report or short answer).
+2. If you built a report file, publish_artifact it, then read the full file contents.
+3. Call post_async_webhook exactly once with body = 100% of what you deliver — the full
+   report markdown (or your full answer if there is no report). Nothing summarized,
+   truncated, or omitted. The HTTP request body is that text.
+4. Do not end the turn without a successful post_async_webhook result.
+Even for a short prompt (e.g. "hi"), still call post_async_webhook with your full reply.
+"""
+
+_ASYNC_CONTINUE_REPORT = (
+    "The previous response hit the output limit and was cut off. Continue the same report. "
+    "Call append_workspace_file once per remaining section (verdict and scope checked, each "
+    "finding, not an issue, totals). Do not repeat sections already in the file. "
     "Do not paste raw query rows. When the file is complete, call publish_artifact once, "
-    "then notify_report_ready with the entire report markdown as body."
+    "then post_async_webhook with 100% of the report markdown as body (nothing omitted)."
 )
 
 _athena = boto3.client("athena", region_name=ATHENA_REGION)
@@ -497,15 +518,22 @@ def publish_artifact(name: str) -> str:
 
 
 @tool
-def notify_report_ready(body: str) -> str:
-    """POST the full report to the invoke webhook_url when the report is ready.
+def post_async_webhook(body: str) -> str:
+    """Required final step on async=true invokes: POST body to the caller's webhook_url.
 
-    Call once after publish_artifact. Pass the entire report content as body
-    (full markdown file contents). That string is the HTTP request body.
+    Only registered when async=true. Call exactly once at the end of the run with the
+    complete delivery payload (full report markdown, or your full answer). That string
+    becomes the HTTP request body to webhook_url. Do not summarize or truncate.
 
     Args:
-        body: Complete report text to deliver (not a summary).
+        body: 100% of the report or answer text to POST (not a summary).
     """
+    if not _async_webhook_enabled.get():
+        return json.dumps(
+            {
+                "error": "post_async_webhook is only available when async=true",
+            }
+        )
     webhook_url = _report_webhook_url.get().strip()
     if not webhook_url:
         return json.dumps(
@@ -525,6 +553,12 @@ def notify_report_ready(body: str) -> str:
     except json.JSONDecodeError:
         pass
 
+    logger.info(
+        "post_async_webhook posting bytes=%s session=%s url=%s",
+        len(data),
+        _artifact_session.get(),
+        webhook_url,
+    )
     req = urllib.request.Request(
         webhook_url,
         data=data,
@@ -539,6 +573,12 @@ def notify_report_ready(body: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             resp_body = resp.read().decode("utf-8", errors="replace")[:2000]
+            logger.info(
+                "post_async_webhook ok status=%s bytes=%s session=%s",
+                getattr(resp, "status", 200),
+                len(data),
+                _artifact_session.get(),
+            )
             return json.dumps(
                 {
                     "ok": True,
@@ -550,8 +590,19 @@ def notify_report_ready(body: str) -> str:
             )
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:500]
+        logger.warning(
+            "post_async_webhook HTTPError status=%s session=%s detail=%s",
+            e.code,
+            _artifact_session.get(),
+            detail,
+        )
         return json.dumps({"ok": False, "status": e.code, "error": detail})
     except urllib.error.URLError as e:
+        logger.warning(
+            "post_async_webhook URLError session=%s err=%s",
+            _artifact_session.get(),
+            e,
+        )
         return json.dumps({"ok": False, "error": str(e.reason if hasattr(e, "reason") else e)})
 
 
@@ -903,13 +954,13 @@ def athena_query(sql: str, max_rows: int = 200) -> str:
 
 
 # Still to add: get_cloudwatch, describe_resource.
+# post_async_webhook is attached only for async=true runs (see _build_agent).
 TOOLS = [
     list_workspace,
     read_workspace_file,
     write_workspace_file,
     append_workspace_file,
     publish_artifact,
-    notify_report_ready,
     athena_query,
     github_search_code,
     github_get_file,
@@ -1024,6 +1075,10 @@ def _bind_report_webhook(url: str) -> None:
     _report_webhook_url.set(url.strip())
 
 
+def _bind_async_webhook(enabled: bool) -> None:
+    _async_webhook_enabled.set(bool(enabled))
+
+
 def _text_events(text: str) -> list[dict]:
     message_id = str(uuid.uuid4())
     return [
@@ -1046,12 +1101,21 @@ def _model() -> BedrockModel:
     )
 
 
-def _build_agent(session_manager: AgentCoreMemorySessionManager | None = None) -> Agent:
+def _build_agent(
+    session_manager: AgentCoreMemorySessionManager | None = None,
+    *,
+    async_mode: bool = False,
+) -> Agent:
     grafana = _grafana_mcp()
+    system = SYSTEM_PROMPT + (MEMORY_PROMPT if MEMORY_TOOLS else "")
+    tools: list[Any] = list(TOOLS)
+    if async_mode:
+        system += ASYNC_SYSTEM_PROMPT
+        tools.append(post_async_webhook)
     kwargs: dict[str, Any] = {
         "model": _model(),
-        "system_prompt": SYSTEM_PROMPT + (MEMORY_PROMPT if MEMORY_TOOLS else ""),
-        "tools": TOOLS + MEMORY_TOOLS + ([grafana] if grafana else []),
+        "system_prompt": system,
+        "tools": tools + MEMORY_TOOLS + ([grafana] if grafana else []),
         "plugins": [_skills_plugin()],
     }
     if session_manager is not None:
@@ -1074,8 +1138,9 @@ async def _run_investigation_silent(
     """Run the agent to completion without streaming (background / async jobs)."""
     _bind_artifact_session(session_id)
     _bind_report_webhook(webhook_url)
+    _bind_async_webhook(True)
     session_manager = _memory_session_manager(session_id, actor_id)
-    agent = _build_agent(session_manager=session_manager)
+    agent = _build_agent(session_manager=session_manager, async_mode=True)
     current_prompt = prompt
     report_continuations = 0
     try:
@@ -1088,7 +1153,7 @@ async def _run_investigation_silent(
                 report_continuations += 1
                 if report_continuations > 3:
                     raise
-                current_prompt = _CONTINUE_REPORT
+                current_prompt = _ASYNC_CONTINUE_REPORT
     finally:
         if session_manager is not None:
             session_manager.close()
@@ -1139,6 +1204,7 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     webhook_url = _webhook_url_from_payload(payload)
     _bind_artifact_session(session_id)
     _bind_report_webhook(webhook_url)
+    _bind_async_webhook(False)
 
     if _want_async(payload):
         webhook_err = _validate_webhook_url(webhook_url)
@@ -1167,7 +1233,7 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
         )
         for event in _text_events(
             "Accepted. Investigation is running in the background; "
-            "the full report body will POST to webhook_url when ready."
+            "post_async_webhook will POST the full body to webhook_url when done."
         ):
             yield event
         yield _agui_event(
