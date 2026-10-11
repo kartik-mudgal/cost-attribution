@@ -80,6 +80,11 @@ from memory import configure as configure_shared_memory
 
 logger = logging.getLogger(__name__)
 
+_AGENT_DIR = Path(__file__).resolve().parent
+_BUNDLED_BIN = _AGENT_DIR / "bin"
+if _BUNDLED_BIN.is_dir():
+    os.environ["PATH"] = f"{_BUNDLED_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-5")
 # One response must fit the report tool call. Bedrock reserves this against the token quota.
