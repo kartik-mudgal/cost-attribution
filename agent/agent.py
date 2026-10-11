@@ -28,7 +28,7 @@ User-facing artifacts are uploaded to ARTIFACT_BUCKET. publish_artifact returns 
 presigned download URL for each file.
 
 With github-fix-pr, the agent may clone devrev repos under workspace/repos/ and open fix PRs
-via github_clone_repo and github_create_fix_pr (git must be on the runtime PATH).
+via github_clone_repo and github_create_fix_pr (gh and git must be on the runtime PATH).
 
 DevRev issues use devrev_create_issue with a PAT from Secrets Manager (DEVREV_PAT_SECRET_ARN).
 """
@@ -388,19 +388,6 @@ def _github_request(
         raise RuntimeError(f"GitHub API {e.code} for {path}: {detail}") from e
 
 
-def _github_open_pull_request(
-    owner: str, repo: str, title: str, body: str, head: str, base: str
-) -> dict:
-    result = _github_request(
-        f"/repos/{owner}/{repo}/pulls",
-        method="POST",
-        body={"title": title, "body": body, "head": head, "base": base},
-    )
-    if not isinstance(result, dict):
-        raise RuntimeError("unexpected GitHub response creating pull request")
-    return result
-
-
 @tool
 def list_workspace() -> list[str]:
     """List files saved in the session workspace."""
@@ -701,7 +688,6 @@ def github_create_fix_pr(
             _github_pat(),
             GITHUB_DEFAULT_OWNER,
             path_list,
-            lambda o, r, t, b, h, base: _github_open_pull_request(o, r, t, b, h, base),
         )
     except (ValueError, FileNotFoundError, RuntimeError, subprocess.SubprocessError) as e:
         return json.dumps({"error": str(e)})

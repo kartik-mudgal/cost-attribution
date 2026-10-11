@@ -1,9 +1,10 @@
 """Clone a GitHub repo into the session workspace and open a fix PR."""
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 CLONE_DIR = "repos"
 BRANCH_PATTERN = re.compile(r"^cost-fix/[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
@@ -27,19 +28,43 @@ def clone_relative_path(owner: str, repo: str) -> str:
     return f"{CLONE_DIR}/{owner}/{repo}"
 
 
-def _git_env() -> dict[str, str]:
+def public_remote(owner: str, repo: str) -> str:
+    return f"https://github.com/{owner}/{repo}.git"
+
+
+_GIT_WITH_GH_CRED = [
+    "-c",
+    "credential.helper=",
+    "-c",
+    "credential.helper=!gh auth git-credential",
+]
+
+
+def _gh_env(token: str) -> dict[str, str]:
     import os
 
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GH_TOKEN"] = token.strip()
     return env
 
 
-def _run_git(args: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _ensure_gh() -> None:
+    if not shutil.which("gh"):
+        raise RuntimeError("gh CLI is not on PATH; install GitHub CLI on the AgentCore runtime")
+
+
+def _redact(text: str, token: str) -> str:
+    if not text or not token:
+        return text
+    return text.replace(token, "***")
+
+
+def _run_git(args: list[str], cwd: Path, token: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", *args],
+        ["git", *_GIT_WITH_GH_CRED, *args],
         cwd=cwd,
-        env=_git_env(),
+        env=_gh_env(token),
         capture_output=True,
         text=True,
         timeout=GIT_TIMEOUT_S,
@@ -47,8 +72,20 @@ def _run_git(args: list[str], cwd: Path, *, check: bool = True) -> subprocess.Co
     )
 
 
-def _authenticated_remote(owner: str, repo: str, token: str) -> str:
-    return f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
+def _run_gh(args: list[str], cwd: Path | None, token: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["gh", *args],
+        cwd=cwd,
+        env=_gh_env(token),
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
+    )
+
+
+def _fail(proc: subprocess.CompletedProcess[str], token: str, label: str) -> None:
+    detail = _redact((proc.stderr or proc.stdout or label).strip(), token)
+    raise RuntimeError(detail[:500])
 
 
 def clone_repository(
@@ -60,6 +97,7 @@ def clone_repository(
     allowed_owner: str,
 ) -> dict[str, Any]:
     """Shallow-clone or refresh a repo under workspace/repos/<owner>/<repo>."""
+    _ensure_gh()
     validate_owner_repo(owner, repo, allowed_owner)
     base_branch = base_branch.strip() or "main"
     rel = clone_relative_path(owner, repo)
@@ -68,39 +106,39 @@ def clone_repository(
     if root not in dest.parents:
         raise ValueError("clone path must stay inside the workspace")
 
-    remote = _authenticated_remote(owner, repo, token)
+    remote = public_remote(owner, repo)
     if dest.is_dir() and (dest / ".git").is_dir():
-        _run_git(["remote", "set-url", "origin", remote], dest)
-        _run_git(["fetch", "origin", base_branch, "--depth", "50"], dest)
-        _run_git(["checkout", base_branch], dest)
-        _run_git(["reset", "--hard", f"origin/{base_branch}"], dest)
+        _run_git(["remote", "set-url", "origin", remote], dest, token)
+        _run_git(["fetch", "origin", base_branch, "--depth", "50"], dest, token)
+        _run_git(["checkout", base_branch], dest, token)
+        _run_git(["reset", "--hard", f"origin/{base_branch}"], dest, token)
         action = "refreshed"
     else:
         if dest.exists() and not (dest / ".git").is_dir():
             raise ValueError(f"{rel} exists and is not a git clone; remove it first")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
+        proc = _run_gh(
             [
-                "git",
+                "repo",
                 "clone",
+                f"{owner}/{repo}",
+                str(dest),
+                "--",
                 "--branch",
                 base_branch,
                 "--single-branch",
                 "--depth",
                 "50",
-                remote,
-                str(dest),
             ],
-            env=_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT_S,
+            None,
+            token,
         )
         if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout or "git clone failed").strip()[:500])
+            _fail(proc, token, "gh repo clone failed")
+        _run_git(["remote", "set-url", "origin", remote], dest, token)
         action = "cloned"
 
-    head = _run_git(["rev-parse", "HEAD"], dest).stdout.strip()
+    head = _run_git(["rev-parse", "HEAD"], dest, token).stdout.strip()
     return {
         "workspace_path": rel,
         "base_branch": base_branch,
@@ -121,9 +159,9 @@ def create_fix_pull_request(
     token: str,
     allowed_owner: str,
     paths: list[str] | None,
-    create_pr: Callable[[str, str, str, str, str, str], dict[str, Any]],
 ) -> dict[str, Any]:
-    """Commit workspace edits in the clone, push branch, and open a GitHub PR."""
+    """Commit workspace edits in the clone, push branch, and open a GitHub PR via gh."""
+    _ensure_gh()
     validate_owner_repo(owner, repo, allowed_owner)
     validate_branch(branch)
     base_branch = base_branch.strip() or "main"
@@ -132,16 +170,15 @@ def create_fix_pull_request(
     if not (repo_dir / ".git").is_dir():
         raise FileNotFoundError(f"clone missing at {rel}; call github_clone_repo first")
 
-    _run_git(["remote", "set-url", "origin", _authenticated_remote(owner, repo, token)], repo_dir)
-    _run_git(["config", "user.email", "cost-investigator-agent@users.noreply.github.com"], repo_dir)
-    _run_git(["config", "user.name", "cost-investigator-agent"], repo_dir)
+    _run_git(["remote", "set-url", "origin", public_remote(owner, repo)], repo_dir, token)
+    _run_git(["config", "user.email", "cost-investigator-agent@users.noreply.github.com"], repo_dir, token)
+    _run_git(["config", "user.name", "cost-investigator-agent"], repo_dir, token)
 
-    # Branch from current HEAD (expected to match base after clone/refresh).
-    existing = _run_git(["branch", "--list", branch], repo_dir, check=False)
+    existing = _run_git(["branch", "--list", branch], repo_dir, token, check=False)
     if branch in existing.stdout:
-        _run_git(["checkout", branch], repo_dir)
+        _run_git(["checkout", branch], repo_dir, token)
     else:
-        _run_git(["checkout", "-b", branch], repo_dir)
+        _run_git(["checkout", "-b", branch], repo_dir, token)
 
     if paths:
         for path in paths:
@@ -150,33 +187,53 @@ def create_fix_pull_request(
             if not (repo_dir / path).exists():
                 raise FileNotFoundError(f"no file to commit at {path!r} under {rel}")
         for path in paths:
-            _run_git(["add", "--", path], repo_dir)
+            _run_git(["add", "--", path], repo_dir, token)
     else:
-        _run_git(["add", "-A"], repo_dir)
+        _run_git(["add", "-A"], repo_dir, token)
 
-    diff = _run_git(["diff", "--cached", "--quiet"], repo_dir, check=False)
+    diff = _run_git(["diff", "--cached", "--quiet"], repo_dir, token, check=False)
     if diff.returncode == 0:
         raise ValueError("no staged changes; edit files under the clone path before creating a PR")
 
-    _run_git(["commit", "-m", commit_message], repo_dir)
-    commit_sha = _run_git(["rev-parse", "HEAD"], repo_dir).stdout.strip()
+    _run_git(["commit", "-m", commit_message], repo_dir, token)
+    commit_sha = _run_git(["rev-parse", "HEAD"], repo_dir, token).stdout.strip()
 
     push = subprocess.run(
-        ["git", "push", "-u", "origin", branch],
+        ["git", *_GIT_WITH_GH_CRED, "push", "-u", "origin", branch],
         cwd=repo_dir,
-        env=_git_env(),
+        env=_gh_env(token),
         capture_output=True,
         text=True,
         timeout=GIT_TIMEOUT_S,
     )
     if push.returncode != 0:
-        raise RuntimeError((push.stderr or push.stdout or "git push failed").strip()[:500])
+        _fail(push, token, "git push failed")
 
-    pr = create_pr(owner, repo, title, body, branch, base_branch)
+    pr_proc = _run_gh(
+        [
+            "pr",
+            "create",
+            "--repo",
+            f"{owner}/{repo}",
+            "--title",
+            title,
+            "--body",
+            body,
+            "--base",
+            base_branch,
+            "--head",
+            branch,
+        ],
+        repo_dir,
+        token,
+    )
+    if pr_proc.returncode != 0:
+        _fail(pr_proc, token, "gh pr create failed")
+
+    pr_url = pr_proc.stdout.strip()
     return {
         "workspace_path": rel,
         "branch": branch,
         "commit_sha": commit_sha,
-        "pull_request_url": pr.get("html_url"),
-        "pull_request_number": pr.get("number"),
+        "pull_request_url": pr_url,
     }
