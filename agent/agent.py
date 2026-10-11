@@ -50,6 +50,7 @@ from bedrock_agentcore.runtime.context import RequestContext
 from strands import Agent, AgentSkills, tool
 from strands.models import BedrockModel
 from strands.tools.mcp import MCPClient
+from strands.types.exceptions import MaxTokensReachedException
 
 from artifacts import (
     DEFAULT_BUCKET,
@@ -104,12 +105,12 @@ Use only numbers returned by tools or present in the case. Never invent figures.
 Keep working notes in the workspace so a later call in the same session can continue.
 
 Every artifact you generate for the user (report, CSV or JSON export, HTML, chart,
-investigation write-up) must be stored for download. Write the file in the workspace,
-then call publish_artifact with its workspace path. Include each download_url in the
-answer and say that it expires after expires_in_seconds. Never invent a download URL.
-Write the artifact as one short markdown file in a single write_workspace_file call,
-using the same sections as the answer. A response that hits the output limit is dropped,
-so the file is never saved.
+investigation write-up) must be stored for download. Build a report with
+append_workspace_file, one section per call: cause, evidence, fix, estimated monthly
+saving, confidence. Cite query ids and figures in evidence. Do not paste raw query rows
+into the file, and do not put the whole report in one call. After the last section,
+call publish_artifact once. Include each download_url in the answer and say that it
+expires after expires_in_seconds. Never invent a download URL.
 
 Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
 Before writing any query, load the cur-athena skill, then the skill for the service
@@ -123,6 +124,13 @@ need GitHub access. GitHub tools load a PAT from Secrets Manager for ``devrev``
 org repos; never print or request the token.
 
 Answer with: cause, evidence, fix, estimated monthly saving, confidence."""
+
+_CONTINUE_REPORT = (
+    "The previous response hit the output limit and was cut off. Continue the same report. "
+    "Call append_workspace_file once per remaining section (cause, evidence, fix, "
+    "estimated monthly saving, confidence). Do not repeat sections already in the file. "
+    "Do not paste raw query rows. When the file is complete, call publish_artifact once."
+)
 
 _athena = boto3.client("athena", region_name=ATHENA_REGION)
 _secrets = boto3.client("secretsmanager", region_name=AWS_REGION)
@@ -250,14 +258,36 @@ def read_workspace_file(name: str) -> str:
 
 @tool
 def write_workspace_file(name: str, content: str) -> str:
-    """Write a file to the session workspace (e.g. notes, intermediate results).
+    """Write a file to the session workspace (notes or one report section).
 
+    For a report, prefer append_workspace_file so each call stays one section.
     User-facing artifacts must also be passed to publish_artifact.
     """
     path = _safe_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return f"wrote {len(content)} bytes to {name}"
+
+
+@tool
+def append_workspace_file(name: str, content: str) -> str:
+    """Append one report section to a workspace file, creating the file if needed.
+
+    Call once per section (cause, evidence, fix, estimated monthly saving, confidence).
+    Do not send the whole report in one call. After the last section, call publish_artifact.
+
+    Args:
+        name: Workspace-relative path, for example artifacts/sqs-report.md.
+        content: One section of markdown, not the full report.
+    """
+    path = _safe_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = ""
+    if path.is_file() and path.stat().st_size and content and not content.startswith("\n"):
+        prefix = "\n"
+    with path.open("a") as handle:
+        handle.write(prefix + content)
+    return f"appended {len(content)} bytes to {name}"
 
 
 @tool
@@ -491,6 +521,7 @@ TOOLS = [
     list_workspace,
     read_workspace_file,
     write_workspace_file,
+    append_workspace_file,
     publish_artifact,
     athena_query,
     github_search_code,
@@ -647,70 +678,86 @@ async def invoke(payload: dict, context: RequestContext) -> AsyncIterator[dict]:
     tools_invoked: list[str] = []
     downloads: list[dict] = []
 
+    current_prompt = prompt
+    report_continuations = 0
     try:
-        async for event in agent.stream_async(prompt):
-            if event.get("type") == "tool_use_stream":
-                tu = event.get("current_tool_use") or {}
-                tu_id = tu.get("toolUseId")
-                tu_name = tu.get("name", "")
-                tu_input = tu.get("input", "")
-                if not tu_id:
-                    continue
+        while True:
+            try:
+                async for event in agent.stream_async(current_prompt):
+                    if event.get("type") == "tool_use_stream":
+                        tu = event.get("current_tool_use") or {}
+                        tu_id = tu.get("toolUseId")
+                        tu_name = tu.get("name", "")
+                        tu_input = tu.get("input", "")
+                        if not tu_id:
+                            continue
 
-                if active_text_msg_id is not None:
-                    yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
-                    active_text_msg_id = None
+                        if active_text_msg_id is not None:
+                            yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
+                            active_text_msg_id = None
 
-                if active_tool_call_id != tu_id:
-                    if active_tool_call_id is not None:
-                        yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
-                    active_tool_call_id = tu_id
-                    tools_invoked.append(tu_name)
-                    yield _agui_event("TOOL_CALL_START", toolCallId=tu_id, toolName=tu_name)
+                        if active_tool_call_id != tu_id:
+                            if active_tool_call_id is not None:
+                                yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
+                            active_tool_call_id = tu_id
+                            tools_invoked.append(tu_name)
+                            yield _agui_event("TOOL_CALL_START", toolCallId=tu_id, toolName=tu_name)
 
-                cumulative = tu_input if isinstance(tu_input, str) else json.dumps(tu_input)
-                prev = seen_tool_args.get(tu_id, "")
-                if cumulative.startswith(prev) and len(cumulative) > len(prev):
-                    delta = cumulative[len(prev) :]
-                    yield _agui_event("TOOL_CALL_ARGS", toolCallId=tu_id, delta=delta)
-                    seen_tool_args[tu_id] = cumulative
-                elif cumulative != prev:
-                    yield _agui_event("TOOL_CALL_ARGS", toolCallId=tu_id, delta=cumulative)
-                    seen_tool_args[tu_id] = cumulative
-                continue
+                        cumulative = tu_input if isinstance(tu_input, str) else json.dumps(tu_input)
+                        prev = seen_tool_args.get(tu_id, "")
+                        if cumulative.startswith(prev) and len(cumulative) > len(prev):
+                            delta = cumulative[len(prev) :]
+                            yield _agui_event("TOOL_CALL_ARGS", toolCallId=tu_id, delta=delta)
+                            seen_tool_args[tu_id] = cumulative
+                        elif cumulative != prev:
+                            yield _agui_event("TOOL_CALL_ARGS", toolCallId=tu_id, delta=cumulative)
+                            seen_tool_args[tu_id] = cumulative
+                        continue
 
-            if "data" in event and isinstance(event["data"], str) and event["data"]:
+                    if "data" in event and isinstance(event["data"], str) and event["data"]:
+                        if active_tool_call_id is not None:
+                            yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
+                            active_tool_call_id = None
+
+                        if active_text_msg_id is None:
+                            active_text_msg_id = str(uuid.uuid4())
+                            yield _agui_event(
+                                "TEXT_MESSAGE_START",
+                                messageId=active_text_msg_id,
+                                role="assistant",
+                            )
+                        yield _agui_event(
+                            "TEXT_MESSAGE_CONTENT",
+                            messageId=active_text_msg_id,
+                            delta=event["data"],
+                        )
+                        continue
+
+                    if "message" in event:
+                        msg = event["message"]
+                        if isinstance(msg, str):
+                            try:
+                                msg = json.loads(msg.replace("'", '"'))
+                            except Exception:
+                                msg = None
+                        for tu_id, parsed in _extract_tool_results(msg):
+                            if active_tool_call_id == tu_id:
+                                yield _agui_event("TOOL_CALL_END", toolCallId=tu_id)
+                                active_tool_call_id = None
+                            _collect_download(parsed, downloads)
+                            yield _agui_event("TOOL_CALL_RESULT", toolCallId=tu_id, result=parsed)
+                break
+            except MaxTokensReachedException:
                 if active_tool_call_id is not None:
                     yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)
                     active_tool_call_id = None
-
-                if active_text_msg_id is None:
-                    active_text_msg_id = str(uuid.uuid4())
-                    yield _agui_event(
-                        "TEXT_MESSAGE_START",
-                        messageId=active_text_msg_id,
-                        role="assistant",
-                    )
-                yield _agui_event(
-                    "TEXT_MESSAGE_CONTENT",
-                    messageId=active_text_msg_id,
-                    delta=event["data"],
-                )
-                continue
-
-            if "message" in event:
-                msg = event["message"]
-                if isinstance(msg, str):
-                    try:
-                        msg = json.loads(msg.replace("'", '"'))
-                    except Exception:
-                        msg = None
-                for tu_id, parsed in _extract_tool_results(msg):
-                    if active_tool_call_id == tu_id:
-                        yield _agui_event("TOOL_CALL_END", toolCallId=tu_id)
-                        active_tool_call_id = None
-                    _collect_download(parsed, downloads)
-                    yield _agui_event("TOOL_CALL_RESULT", toolCallId=tu_id, result=parsed)
+                if active_text_msg_id is not None:
+                    yield _agui_event("TEXT_MESSAGE_END", messageId=active_text_msg_id)
+                    active_text_msg_id = None
+                report_continuations += 1
+                if report_continuations > 3:
+                    raise
+                current_prompt = _CONTINUE_REPORT
 
         if active_tool_call_id is not None:
             yield _agui_event("TOOL_CALL_END", toolCallId=active_tool_call_id)

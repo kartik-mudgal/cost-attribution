@@ -189,7 +189,9 @@ class TestWiring(unittest.TestCase):
         self.assertIn("BedrockModel(", source)
         self.assertIn("max_tokens=MAX_OUTPUT_TOKENS", source)
         self.assertIn('os.environ.get("MAX_OUTPUT_TOKENS", "16000")', source)
-        self.assertIn("one short markdown file", source)
+        self.assertIn("def append_workspace_file", source)
+        self.assertIn("one section per call", source)
+        self.assertIn("MaxTokensReachedException", source)
         runtime = (REPO_ROOT / "deploy" / "deploy_runtime.py").read_text()
         self.assertIn('"MAX_OUTPUT_TOKENS": "16000"', runtime)
 
