@@ -48,6 +48,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from bedrock_agentcore.runtime.context import RequestContext
 from strands import Agent, AgentSkills, tool
+from strands.models import BedrockModel
 from strands.tools.mcp import MCPClient
 
 from artifacts import (
@@ -63,6 +64,8 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-5")
+# One response must fit the report tool call. Bedrock reserves this against the token quota.
+MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "16000"))
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "").strip()
 AGENTCORE_ACTOR_ID = os.environ.get("AGENTCORE_ACTOR_ID", "cost-investigator")
 AWS_REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
@@ -104,6 +107,9 @@ Every artifact you generate for the user (report, CSV or JSON export, HTML, char
 investigation write-up) must be stored for download. Write the file in the workspace,
 then call publish_artifact with its workspace path. Include each download_url in the
 answer and say that it expires after expires_in_seconds. Never invent a download URL.
+Write the artifact as one short markdown file in a single write_workspace_file call,
+using the same sections as the answer. A response that hits the output limit is dropped,
+so the file is never saved.
 
 Cost data is the CUR table {ATHENA_DATABASE}.{ATHENA_TABLE}, queried with athena_query.
 Before writing any query, load the cur-athena skill, then the skill for the service
@@ -590,10 +596,18 @@ def _collect_download(parsed: Any, downloads: list[dict]) -> None:
         downloads.append(parsed)
 
 
+def _model() -> BedrockModel:
+    return BedrockModel(
+        model_id=MODEL_ID,
+        max_tokens=MAX_OUTPUT_TOKENS,
+        region_name=AWS_REGION,
+    )
+
+
 def _build_agent(session_manager: AgentCoreMemorySessionManager | None = None) -> Agent:
     grafana = _grafana_mcp()
     kwargs: dict[str, Any] = {
-        "model": MODEL_ID,
+        "model": _model(),
         "system_prompt": SYSTEM_PROMPT,
         "tools": TOOLS + ([grafana] if grafana else []),
         "plugins": [_skills_plugin()],
