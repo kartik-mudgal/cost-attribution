@@ -1,5 +1,6 @@
 """Clone a GitHub repo into the session workspace and open a fix PR."""
 
+import base64
 import json
 import re
 import shutil
@@ -35,27 +36,65 @@ def public_remote(owner: str, repo: str) -> str:
     return f"https://github.com/{owner}/{repo}.git"
 
 
-# GH_TOKEN is read by the helper; never put the token in the remote URL.
-# safe.directory=*: workspace mounts are often owned by a different uid than the runtime user.
-_GIT_WITH_TOKEN_CRED = [
-    "-c",
-    "credential.helper=",
-    "-c",
-    "credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f",
-    "-c",
-    "safe.directory=*",
-]
-
 GITHUB_API = "https://api.github.com"
+
+
+def _require_token(token: str) -> str:
+    t = token.strip()
+    if not t:
+        raise RuntimeError(
+            "GitHub PAT is empty; check GITHUB_PAT_SECRET_ARN and GITHUB_PAT_SECRET_JSON_KEY"
+        )
+    return t
+
+
+def _git_config_args(token: str) -> list[str]:
+    """Per-invocation git -c flags: HTTPS Basic auth for github.com (no shell credential helper)."""
+    t = _require_token(token)
+    basic = base64.b64encode(f"x-access-token:{t}".encode("ascii")).decode("ascii")
+    return [
+        "-c",
+        "credential.helper=",
+        "-c",
+        "safe.directory=*",
+        "-c",
+        f"http.https://github.com/.extraHeader=Authorization: Basic {basic}",
+    ]
 
 
 def _gh_env(token: str) -> dict[str, str]:
     import os
 
+    t = _require_token(token)
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GH_TOKEN"] = token.strip()
+    env["GH_TOKEN"] = t
     return env
+
+
+def verify_github_repo_access(owner: str, repo: str, token: str) -> None:
+    """Fail fast with a clear message when the PAT cannot read the repository."""
+    t = _require_token(token)
+    req = urllib.request.Request(
+        f"{GITHUB_API}/repos/{owner}/{repo}",
+        headers={
+            "Authorization": f"Bearer {t}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status >= 400:
+                raise RuntimeError(f"GitHub API {resp.status} checking access to {owner}/{repo}")
+    except urllib.error.HTTPError as e:
+        detail = _redact(e.read().decode()[:300], t)
+        if e.code in (401, 403):
+            raise RuntimeError(
+                f"GitHub PAT rejected for {owner}/{repo} ({e.code}): {detail}. "
+                "Ensure the token has repo contents read (and write for PRs) on this repository."
+            ) from e
+        raise RuntimeError(f"GitHub API {e.code} checking {owner}/{repo}: {detail}") from e
 
 
 def _ensure_git() -> None:
@@ -71,7 +110,7 @@ def _redact(text: str, token: str) -> str:
 
 def _run_git(args: list[str], cwd: Path, token: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
-        ["git", *_GIT_WITH_TOKEN_CRED, *args],
+        ["git", *_git_config_args(token), *args],
         cwd=cwd,
         env=_gh_env(token),
         capture_output=True,
@@ -148,6 +187,8 @@ def clone_repository(
 ) -> dict[str, Any]:
     """Shallow-clone or refresh a repo under workspace/repos/<owner>/<repo>."""
     _ensure_git()
+    _require_token(token)
+    verify_github_repo_access(owner, repo, token)
     validate_owner_repo(owner, repo, allowed_owner)
     base_branch = base_branch.strip() or "main"
     rel = clone_relative_path(owner, repo)
@@ -248,7 +289,7 @@ def create_fix_pull_request(
     commit_sha = _run_git(["rev-parse", "HEAD"], repo_dir, token).stdout.strip()
 
     push = subprocess.run(
-        ["git", *_GIT_WITH_TOKEN_CRED, "push", "-u", "origin", branch],
+        ["git", *_git_config_args(token), "push", "-u", "origin", branch],
         cwd=repo_dir,
         env=_gh_env(token),
         capture_output=True,

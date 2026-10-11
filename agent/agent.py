@@ -302,6 +302,7 @@ def _github_pat() -> str:
         token = raw.strip()
     if not token:
         raise RuntimeError(f"empty GitHub PAT in secret {GITHUB_PAT_SECRET_ARN!r}")
+    token = str(token).strip()
     _github_pat_cache = token
     return token
 
