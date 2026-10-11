@@ -10,6 +10,10 @@ rm -rf "$BUILD" && mkdir -p "$BUILD/pkg"
 uv pip install -q --target "$BUILD/pkg" --python-platform aarch64-manylinux2014 \
   --python-version 3.12 --only-binary=:all: -r "$ROOT/agent/requirements.txt"
 cp "$ROOT/agent/agent.py" "$BUILD/pkg/"
+# Strands AgentSkills loads SKILL.md packages from this directory at runtime.
+if [[ -d "$ROOT/agent/skills" ]]; then
+  cp -R "$ROOT/agent/skills" "$BUILD/pkg/skills"
+fi
 (cd "$BUILD/pkg" && zip -qr "$BUILD/agent.zip" . -x '*__pycache__*')
 aws s3 cp "$BUILD/agent.zip" "s3://$BUCKET/$KEY" --quiet
 echo "s3://$BUCKET/$KEY ($(du -h "$BUILD/agent.zip" | cut -f1))"

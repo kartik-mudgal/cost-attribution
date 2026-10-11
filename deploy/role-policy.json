@@ -1,11 +1,87 @@
-{"Version":"2012-10-17","Statement":[
- {"Sid":"Bedrock","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
-  "Resource":["arn:aws:bedrock:*::foundation-model/*","arn:aws:bedrock:*:270149200236:inference-profile/*"]},
- {"Sid":"CodeArtifact","Effect":"Allow","Action":["s3:GetObject"],"Resource":"arn:aws:s3:::cost-agent-artifacts-270149200236/*"},
- {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents","logs:DescribeLogStreams","logs:DescribeLogGroups"],
-  "Resource":"arn:aws:logs:us-west-2:270149200236:log-group:/aws/bedrock-agentcore/*"},
- {"Sid":"Tracing","Effect":"Allow","Action":["xray:PutTraceSegments","xray:PutTelemetryRecords","xray:GetSamplingRules","xray:GetSamplingTargets"],"Resource":"*"},
- {"Sid":"Metrics","Effect":"Allow","Action":"cloudwatch:PutMetricData","Resource":"*","Condition":{"StringEquals":{"cloudwatch:namespace":"bedrock-agentcore"}}},
- {"Sid":"WorkloadIdentity","Effect":"Allow","Action":["bedrock-agentcore:GetWorkloadAccessToken","bedrock-agentcore:GetWorkloadAccessTokenForJWT","bedrock-agentcore:GetWorkloadAccessTokenForUserId"],
-  "Resource":"arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default*"}
-]}
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Bedrock",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:270149200236:inference-profile/*"
+      ]
+    },
+    {
+      "Sid": "CodeArtifact",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::cost-agent-artifacts-270149200236/*"
+    },
+    {
+      "Sid": "Logs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": "arn:aws:logs:us-west-2:270149200236:log-group:/aws/bedrock-agentcore/*"
+    },
+    {
+      "Sid": "Tracing",
+      "Effect": "Allow",
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Metrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "bedrock-agentcore"
+        }
+      }
+    },
+    {
+      "Sid": "WorkloadIdentity",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:GetWorkloadAccessToken",
+        "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
+      ],
+      "Resource": [
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default/workload-identity/cost_investigator-*"
+      ]
+    },
+    {
+      "Sid": "GetResourceApiKey",
+      "Effect": "Allow",
+      "Action": ["bedrock-agentcore:GetResourceApiKey"],
+      "Resource": [
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:token-vault/default",
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:token-vault/default/apikeycredentialprovider/github-pat",
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:us-west-2:270149200236:workload-identity-directory/default/workload-identity/cost_investigator-*"
+      ]
+    },
+    {
+      "Sid": "GithubPatSecret",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:us-west-2:270149200236:secret:bedrock-agentcore-identity!default/apikey/github-pat-*"
+    }
+  ]
+}

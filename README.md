@@ -14,6 +14,7 @@ and is hosted on Amazon Bedrock AgentCore Runtime. Each session gets a persisten
 agent/
   agent.py            Agent code and AgentCore entrypoint
   requirements.txt    Python dependencies
+  skills/             Strands Agent Skills (SKILL.md packages), bundled into the runtime zip
 deploy/
   package.sh          Builds the code zip and uploads it to S3
   deploy_runtime.py   Creates or updates the AgentCore runtime
@@ -110,9 +111,43 @@ The runtime sets these environment variables (see `deploy_runtime.py`):
 | --- | --- | --- |
 | `WORKSPACE_DIR` | `/mnt/workspace` | Where session storage is mounted |
 | `MODEL_ID` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Bedrock model or inference profile |
+| `GITHUB_PAT_PROVIDER` | `github-pat` | AgentCore Identity API-key credential provider name |
+| `GITHUB_DEFAULT_OWNER` | `devrev` | Default GitHub org for code/commit search |
+| `SKILLS_DIR` | `<alongside agent.py>/skills` | Bundled Strands skills directory |
+
+## Agent skills
+
+Strands [Agent Skills](https://strandsagents.com/docs/user-guide/concepts/plugins/skills/) live under
+`agent/skills/<skill-name>/SKILL.md`. `package.sh` copies that tree into the runtime zip. At invoke
+time the agent registers them with `AgentSkills` and can load full instructions on demand via the
+`skills` tool.
+
+Also loaded if present: `/mnt/workspace/skills/` (session-specific skills written into the workspace).
+
+Bundled today:
+
+| Skill | When to use |
+| --- | --- |
+| `github-code-lookup` | Fetch GitHub PAT via Identity and access `devrev` org repos |
+
+Add a new skill by creating `agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
+`description`) and markdown instructions, then redeploy.
+
+## GitHub credential (AgentCore Identity)
+
+Store a GitHub PAT once (do not put it in env vars or the zip):
+
+```bash
+aws bedrock-agentcore-control create-api-key-credential-provider \
+  --name github-pat --api-key "<token>" --region us-west-2
+```
+
+The runtime role must allow `bedrock-agentcore:GetResourceApiKey` on that provider and
+`secretsmanager:GetSecretValue` on the managed secret (see `deploy/role-policy.json`). Agent tools
+fetch the PAT with `@requires_api_key(provider_name="github-pat")`.
 
 ## Status
 
-At the moment the agent only has workspace tools (list, read, write). The cost tools are still to be
-added in `agent/agent.py`: `get_resource_cost` (CUR data via DuckDB), `get_cloudwatch` and
+Workspace tools, GitHub code tools (via `github-pat`), and skills are in place. Cost tools are still
+to be added in `agent/agent.py`: `get_resource_cost` (CUR data via DuckDB), `get_cloudwatch` and
 `describe_resource`.
