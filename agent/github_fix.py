@@ -1,6 +1,7 @@
 """Clone a GitHub repo into the session workspace and open a fix PR."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ CLONE_DIR = "repos"
 BRANCH_PATTERN = re.compile(r"^cost-fix/[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 OWNER_REPO_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$")
 GIT_TIMEOUT_S = 300
+GITHUB_API = "https://api.github.com"
 
 
 def validate_owner_repo(owner: str, repo: str, allowed_owner: str) -> None:
@@ -35,23 +37,14 @@ def public_remote(owner: str, repo: str) -> str:
     return f"https://github.com/{owner}/{repo}.git"
 
 
-# GH_TOKEN is read by the helper; never put the token in the remote URL.
-_GIT_WITH_TOKEN_CRED = [
-    "-c",
-    "credential.helper=",
-    "-c",
-    "credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f",
-]
-
-GITHUB_API = "https://api.github.com"
+def _git_auth_args(token: str) -> list[str]:
+    """HTTPS auth via header; never put the token in the remote URL."""
+    return ["-c", f"http.extraHeader=Authorization: Bearer {token.strip()}"]
 
 
-def _gh_env(token: str) -> dict[str, str]:
-    import os
-
+def _git_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GH_TOKEN"] = token.strip()
     return env
 
 
@@ -68,9 +61,9 @@ def _redact(text: str, token: str) -> str:
 
 def _run_git(args: list[str], cwd: Path, token: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", *_GIT_WITH_TOKEN_CRED, *args],
+        ["git", *_git_auth_args(token), *args],
         cwd=cwd,
-        env=_gh_env(token),
+        env=_git_env(),
         capture_output=True,
         text=True,
         timeout=GIT_TIMEOUT_S,
@@ -233,14 +226,7 @@ def create_fix_pull_request(
     _run_git(["commit", "-m", commit_message], repo_dir, token)
     commit_sha = _run_git(["rev-parse", "HEAD"], repo_dir, token).stdout.strip()
 
-    push = subprocess.run(
-        ["git", *_GIT_WITH_TOKEN_CRED, "push", "-u", "origin", branch],
-        cwd=repo_dir,
-        env=_gh_env(token),
-        capture_output=True,
-        text=True,
-        timeout=GIT_TIMEOUT_S,
-    )
+    push = _run_git(["push", "-u", "origin", branch], repo_dir, token, check=False)
     if push.returncode != 0:
         _fail(push, token, "git push failed")
 

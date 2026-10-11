@@ -6,13 +6,13 @@ from unittest.mock import MagicMock, patch
 
 from github_fix import (
     BRANCH_PATTERN,
-    _GIT_WITH_TOKEN_CRED,
+    _git_auth_args,
+    _git_env,
     clone_relative_path,
     create_github_pull_request,
     public_remote,
     validate_branch,
     validate_owner_repo,
-    _gh_env,
 )
 
 
@@ -40,15 +40,14 @@ class TestGithubFixValidation(unittest.TestCase):
         self.assertEqual(url, "https://github.com/devrev/wisp.git")
         self.assertNotIn("x-access-token", url)
 
-    def test_gh_env_sets_token_not_in_remote(self):
-        env = _gh_env("secret-token-value")
-        self.assertEqual(env["GH_TOKEN"], "secret-token-value")
+    def test_git_auth_args_uses_bearer_header(self):
+        args = _git_auth_args("secret-token-value")
+        self.assertEqual(args, ["-c", "http.extraHeader=Authorization: Bearer secret-token-value"])
         self.assertNotIn("secret-token-value", public_remote("devrev", "wisp"))
 
-    def test_git_cred_helper_does_not_use_gh_cli(self):
-        joined = " ".join(_GIT_WITH_TOKEN_CRED)
-        self.assertIn("GH_TOKEN", joined)
-        self.assertNotIn("gh auth", joined)
+    def test_git_env_disables_terminal_prompt(self):
+        env = _git_env()
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
 
     @patch("github_fix.urllib.request.urlopen")
     def test_create_github_pull_request_returns_html_url(self, urlopen: MagicMock) -> None:
